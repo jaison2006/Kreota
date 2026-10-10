@@ -489,12 +489,18 @@ function Drawer({ label, onClose, children }: { label: string; onClose: () => vo
 /* ---------- Discover creators (client) ---------- */
 
 type CreatorSort = "match" | "followers" | "engagement" | "rating" | "priceLow" | "priceHigh";
+type CreatorView = "recommended" | "all" | "available" | "saved";
 
-function CreatorMarketplace() {
+/** Project ids this creator has been invited to. */
+const projectsInviting = (projects: ProjectWithId[], id: string) => projects.filter((p) => p.invited?.[id]);
+
+function CreatorMarketplace({ goProjects }: { goProjects: () => void }) {
   const { user, profile } = useAccount();
+  const { openChat } = useContext(ShellContext);
   const want = clientWant(profile);
   const saved = profile.shortlist ?? {};
-  const invited = profile.invites ?? {};
+  const projects = projectsOf(profile);
+  const [view, setView] = useState<CreatorView>("recommended");
   const [q, setQ] = useState("");
   const [niche, setNiche] = useState("");
   const [city, setCity] = useState("");
@@ -502,21 +508,27 @@ function CreatorMarketplace() {
   const [platform, setPlatform] = useState("");
   const [maxRate, setMaxRate] = useState(0);
   const [sort, setSort] = useState<CreatorSort>("match");
-  const [savedOnly, setSavedOnly] = useState(false);
-  const [availableOnly, setAvailableOnly] = useState(false);
   const [open, setOpen] = useState<SeedCreator | null>(null);
+  const [inviting, setInviting] = useState<SeedCreator | null>(null);
+  const [compare, setCompare] = useState<string[]>([]);
+  const [comparing, setComparing] = useState(false);
 
-  const scored = CREATORS.map((c) => ({ c, score: matchScore(c, want) }));
+  const scored = useMemo(() => CREATORS.map((c) => ({ c, score: matchScore(c, want) })), [want.niches.join(), want.platforms.join()]);
+  const recommended = [...scored].sort((a, b) => b.score - a.score).slice(0, 12);
+  const strong = scored.filter((x) => x.score >= 85);
+  const available = scored.filter((x) => x.c.availability === "Available now");
+  const savedList = scored.filter((x) => saved[x.c.id]);
+  const invitedIds = new Set(projects.flatMap((p) => keysOf(p.invited)));
+  const base = view === "recommended" ? recommended : view === "available" ? available : view === "saved" ? savedList : scored;
+
   const needle = q.trim().toLowerCase();
-  const list = scored
+  const list = base
     .filter(({ c }) => !needle || `${c.name} ${c.handle} ${c.title} ${c.city} ${c.state} ${c.niches.join(" ")} ${c.languages.join(" ")}`.toLowerCase().includes(needle))
     .filter(({ c }) => !niche || c.niches.includes(niche))
     .filter(({ c }) => !city || c.city === city)
     .filter(({ c }) => !language || c.languages.includes(language))
     .filter(({ c }) => !platform || c.platforms.some((p) => p.name === platform))
     .filter(({ c }) => !maxRate || c.rateFrom <= maxRate)
-    .filter(({ c }) => !savedOnly || saved[c.id])
-    .filter(({ c }) => !availableOnly || c.availability === "Available now")
     .sort((a, b) => {
       switch (sort) {
         case "followers": return totalFollowers(b.c) - totalFollowers(a.c);
@@ -527,65 +539,192 @@ function CreatorMarketplace() {
         default: return b.score - a.score;
       }
     });
-  const filtersOn = !!(q || niche || city || language || platform || maxRate || savedOnly || availableOnly);
-  const reset = () => { setQ(""); setNiche(""); setCity(""); setLanguage(""); setPlatform(""); setMaxRate(0); setSavedOnly(false); setAvailableOnly(false); };
+  const filtersOn = !!(q || niche || city || language || platform || maxRate);
+  const reset = () => { setQ(""); setNiche(""); setCity(""); setLanguage(""); setPlatform(""); setMaxRate(0); };
   const toggleSave = (c: SeedCreator) => setListed(user.uid, "shortlist", c.id, !saved[c.id]);
-  const toggleInvite = (c: SeedCreator) => setListed(user.uid, "invites", c.id, !invited[c.id]);
+  const toggleCompare = (id: string) => setCompare((xs) => (xs.includes(id) ? xs.filter((x) => x !== id) : xs.length >= 3 ? xs : [...xs, id]));
+  const sortLabel = { match: "best match", followers: "most followers", engagement: "highest engagement", rating: "top rated", priceLow: "price: low to high", priceHigh: "price: high to low" }[sort];
+  const tabs: [CreatorView, string, number][] = [["recommended", "Recommended for you", recommended.length], ["all", "All creators", scored.length], ["available", "Available now", available.length], ["saved", "Saved", savedList.length]];
   const brand = (profile.client?.brand as string) || "your brand";
 
   return <>
-    <Topbar title="Discover creators" subtitle="Verified Indian creators, matched to your brand." />
-    <div className="page-content">
-      <div className="market-tools">
-        <div className="search-box"><Icon name="search" /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by name, city, niche or language…" aria-label="Search creators" /></div>
-        <label className="mk-select"><span className="sr-only">Sort</span>
-          <select value={sort} onChange={(e) => setSort(e.target.value as CreatorSort)}>
-            <option value="match">Best match</option><option value="followers">Most followers</option><option value="engagement">Highest engagement</option>
-            <option value="rating">Top rated</option><option value="priceLow">Price: low to high</option><option value="priceHigh">Price: high to low</option>
-          </select>
-        </label>
+    <Topbar title="Discover creators" subtitle={`Indian creators matched to ${brand}.`} />
+    <div className="page-content op2 dc">
+      <section className="op2-stats" aria-label="Summary">
+        <div><span>Creators on Kreota</span><b>{CREATORS.length}</b><small>Across {new Set(CREATORS.map((c) => c.city)).size} cities · sample profiles</small></div>
+        <div className="mint"><span>Strong matches</span><b>{strong.length}</b><small>85%+ fit with {brand}</small></div>
+        <div className="lilac"><span>Saved</span><b>{savedList.length}</b><small>{savedList.length ? "Your shortlist of creators" : "Tap ☆ to save a creator"}</small></div>
+        <div className="peach"><span>Invited to projects</span><b>{invitedIds.size}</b><small>{projects.length ? `Across ${projects.length} project${projects.length === 1 ? "" : "s"}` : "Create a project to invite"}</small></div>
+      </section>
+
+      <div className="op2-tabs" role="tablist" aria-label="Creator views">
+        {tabs.map(([id, label, n]) => <button key={id} role="tab" aria-selected={view === id} className={view === id ? "on" : ""} onClick={() => setView(id)}>{label}<i>{n}</i></button>)}
       </div>
-      <div className="mk-filters">
+
+      <div className="op2-toolbar dc-toolbar">
+        <div className="search-box"><Icon name="search" /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by name, city, niche or language…" aria-label="Search creators" /></div>
         <select value={niche} onChange={(e) => setNiche(e.target.value)} aria-label="Niche"><option value="">All niches</option>{uniq(CREATORS.flatMap((c) => c.niches)).map((n) => <option key={n}>{n}</option>)}</select>
         <select value={city} onChange={(e) => setCity(e.target.value)} aria-label="City"><option value="">All cities</option>{uniq(CREATORS.map((c) => c.city)).map((n) => <option key={n}>{n}</option>)}</select>
         <select value={language} onChange={(e) => setLanguage(e.target.value)} aria-label="Language"><option value="">All languages</option>{uniq(CREATORS.flatMap((c) => c.languages)).map((n) => <option key={n}>{n}</option>)}</select>
         <select value={platform} onChange={(e) => setPlatform(e.target.value)} aria-label="Platform"><option value="">All platforms</option>{uniq(CREATORS.flatMap((c) => c.platforms.map((p) => p.name))).map((n) => <option key={n}>{n}</option>)}</select>
         <select value={maxRate} onChange={(e) => setMaxRate(Number(e.target.value))} aria-label="Budget"><option value={0}>Any budget</option>{[15_000, 30_000, 60_000, 1_00_000, 2_00_000].map((n) => <option key={n} value={n}>Starts under {formatINRShort(n)}</option>)}</select>
-        <button className={`mk-chip${availableOnly ? " on" : ""}`} aria-pressed={availableOnly} onClick={() => setAvailableOnly((v) => !v)}>Available now</button>
-        <button className={`mk-chip${savedOnly ? " on" : ""}`} aria-pressed={savedOnly} onClick={() => setSavedOnly((v) => !v)}><Icon name="star" size={13} /> Saved ({Object.keys(saved).length})</button>
-        {filtersOn && <button className="text-button" onClick={reset}>Clear all</button>}
+        <select value={sort} onChange={(e) => setSort(e.target.value as CreatorSort)} aria-label="Sort">
+          <option value="match">Sort: Best match</option><option value="followers">Sort: Most followers</option><option value="engagement">Sort: Engagement</option>
+          <option value="rating">Sort: Top rated</option><option value="priceLow">Sort: Price low–high</option><option value="priceHigh">Sort: Price high–low</option>
+        </select>
       </div>
-      <div className="market-summary"><div><Icon name="spark" /><span>Matched to</span><b>{brand}</b></div><p><strong>{list.length}</strong> of {CREATORS.length} creators · {Object.keys(invited).length} invited<span className="mk-sample">Sample profiles for demo</span></p></div>
+
+      <div className="op2-count">
+        <span>Showing <b>{list.length}</b> creator{list.length === 1 ? "" : "s"} · sorted by {sortLabel}</span>
+        {filtersOn && <button className="text-button" onClick={reset}>Clear filters</button>}
+      </div>
+
       {list.length ? (
-        <div className="creator-grid">{list.map(({ c, score }) => (
-          <article className="creator-card" key={c.id}>
-            <button className="creator-photo mk-photo-btn" onClick={() => setOpen(c)} aria-label={`View ${c.name}'s profile`}>
-              <img src={creatorAvatar(c)} alt="" loading="lazy" />
-              <span className="match"><Icon name="spark" size={12} />{score}% match</span>
-              <span className={`mk-avail${c.availability === "Available now" ? " now" : ""}`}>{c.availability}</span>
-            </button>
-            <button className={`save${saved[c.id] ? " on" : ""}`} onClick={() => toggleSave(c)} aria-pressed={!!saved[c.id]} aria-label={saved[c.id] ? `Remove ${c.name} from saved` : `Save ${c.name}`}><Icon name="star" size={16} /></button>
-            <div className="creator-info">
-              <div className="creator-name"><div><h3>{c.name}{c.verified && <span title="Verified">✓</span>}</h3><p>{c.title} · {c.city}</p></div></div>
-              <p className="mk-rate"><b>{rateRange(c)}</b> / project</p>
-              <div className="tag-row">{c.niches.slice(0, 3).map((t) => <span key={t}>{t}</span>)}</div>
-              <div className="creator-stats"><span><b>{formatCount(totalFollowers(c))}</b> reach</span><span><b>{c.engagement}%</b> engagement</span><span><b>{c.rating}★</b> rating</span></div>
-              <div className="mk-card-actions">
-                <Button kind="light" onClick={() => setOpen(c)}>View profile</Button>
-                <Button kind={invited[c.id] ? "light" : "dark"} onClick={() => toggleInvite(c)}>{invited[c.id] ? <><Icon name="check" /> Invited</> : <>Invite <Icon name="send" size={15} /></>}</Button>
+        <div className="dc-grid">{list.map(({ c, score }) => {
+          const invitedTo = projectsInviting(projects, c.id);
+          const inCompare = compare.includes(c.id);
+          return (
+            <article className={`dc-card${inCompare ? " comparing" : ""}`} key={c.id}>
+              <div className="dc-photo">
+                <button className="dc-photo-btn" onClick={() => setOpen(c)} aria-label={`View ${c.name}'s profile`}><img src={creatorAvatar(c)} alt="" loading="lazy" /></button>
+                <span className={`op2-match ${matchTone(score)}`}><Icon name="spark" size={12} />{score}% match</span>
+                <button className={`dc-save${saved[c.id] ? " on" : ""}`} onClick={() => toggleSave(c)} aria-pressed={!!saved[c.id]} aria-label={saved[c.id] ? `Remove ${c.name} from saved` : `Save ${c.name}`}><Icon name="star" size={16} /></button>
+                <span className={`mk-avail${c.availability === "Available now" ? " now" : ""}`}>{c.availability}</span>
               </div>
-            </div>
-          </article>
-        ))}</div>
+              <div className="dc-body">
+                <div className="dc-name">
+                  <button onClick={() => setOpen(c)}>{c.name}</button>{c.verified && <span className="mk-verified" title="Verified">✓</span>}
+                </div>
+                <p className="dc-sub">{c.title} · {c.city}</p>
+                <dl className="dc-stats">
+                  <div><dt>Reach</dt><dd>{formatCount(totalFollowers(c))}</dd></div>
+                  <div><dt>Engagement</dt><dd>{c.engagement}%</dd></div>
+                  <div><dt>Rating</dt><dd>{c.rating}★</dd></div>
+                </dl>
+                <div className="op2-tags">{c.niches.slice(0, 3).map((t) => <span key={t}>{t}</span>)}</div>
+                <p className="dc-rate"><b>{rateRange(c)}</b> per project · {c.turnaroundDays}-day turnaround</p>
+                {invitedTo.length > 0 && <p className="dc-invited"><Icon name="check" size={13} /> Invited to {invitedTo.length === 1 ? invitedTo[0].title : `${invitedTo.length} projects`}</p>}
+                <div className="dc-actions">
+                  <Button kind="dark" onClick={() => setInviting(c)}>{invitedTo.length ? "Manage invites" : "Invite"}</Button>
+                  <Button kind="light" onClick={() => openChat(c.id)}><Icon name="chat" size={15} /> Message</Button>
+                </div>
+                <label className="dc-compare"><input type="checkbox" checked={inCompare} disabled={!inCompare && compare.length >= 3} onChange={() => toggleCompare(c.id)} /> Compare</label>
+              </div>
+            </article>
+          );
+        })}</div>
       ) : (
-        <div className="mk-empty"><Icon name="search" size={26} /><b>No creators match these filters</b><p>Try removing a filter or searching a different city or niche.</p><Button kind="light" onClick={reset}>Clear filters</Button></div>
+        <div className="mk-empty">
+          <Icon name={view === "saved" && !filtersOn ? "star" : "search"} size={26} />
+          <b>{view === "saved" && !filtersOn ? "No saved creators yet" : "No creators match these filters"}</b>
+          <p>{view === "saved" && !filtersOn ? "Tap ☆ on a creator to keep them here." : "Try removing a filter or searching a different city or niche."}</p>
+          {filtersOn ? <Button kind="light" onClick={reset}>Clear filters</Button> : view !== "all" && <Button kind="light" onClick={() => setView("all")}>See all creators</Button>}
+        </div>
       )}
     </div>
-    {open && <CreatorDrawer c={open} score={matchScore(open, want)} reasons={matchReasons(open, want)} saved={!!saved[open.id]} invited={!!invited[open.id]} onSave={() => toggleSave(open)} onInvite={() => toggleInvite(open)} onClose={() => setOpen(null)} />}
+
+    {compare.length > 0 && !comparing && !open && !inviting && (
+      <div className="dc-compare-bar" role="region" aria-label="Compare creators">
+        <div className="dc-compare-faces">{compare.map((id) => { const c = CREATORS.find((x) => x.id === id)!; return <img key={id} src={creatorAvatar(c)} alt={c.name} title={c.name} />; })}</div>
+        <span>{compare.length} of 3 selected</span>
+        <button className="text-button" onClick={() => setCompare([])}>Clear</button>
+        <Button kind="accent" onClick={() => setComparing(true)} >Compare {compare.length > 1 ? `${compare.length} creators` : ""}</Button>
+      </div>
+    )}
+
+    {open && <CreatorDrawer c={open} score={matchScore(open, want)} reasons={matchReasons(open, want)} saved={!!saved[open.id]} invited={projectsInviting(projects, open.id).length > 0} onSave={() => toggleSave(open)} onInvite={() => setInviting(open)} onMessage={() => openChat(open.id)} onClose={() => setOpen(null)} />}
+    {inviting && <InvitePicker c={inviting} projects={projects} onClose={() => setInviting(null)} goProjects={goProjects} />}
+    {comparing && <CompareDrawer ids={compare} want={want} onClose={() => setComparing(false)} onInvite={(c) => { setComparing(false); setInviting(c); }} />}
   </>;
 }
 
-function CreatorDrawer({ c, score, reasons, saved, invited, onSave, onInvite, onClose }: { c: SeedCreator; score: number; reasons: string[]; saved: boolean; invited: boolean; onSave: () => void; onInvite: () => void; onClose: () => void }) {
+function InvitePicker({ c, projects, onClose, goProjects }: { c: SeedCreator; projects: ProjectWithId[]; onClose: () => void; goProjects: () => void }) {
+  const { user } = useAccount();
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const usable = projects.filter((p) => p.status !== "completed");
+  const toggle = async (p: ProjectWithId) => {
+    setBusy(p.id);
+    setError("");
+    try {
+      if (p.invited?.[c.id]) await updateProject(user.uid, p.id, { [`invited/${c.id}`]: null, [`shortlisted/${c.id}`]: null });
+      else await updateProject(user.uid, p.id, { [`invited/${c.id}`]: Date.now(), ...(p.status === "draft" ? { status: "open", "milestones/publishedAt": Date.now() } : {}) });
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setBusy("");
+    }
+  };
+  return (
+    <Drawer label={`Invite ${c.name}`} onClose={onClose}>
+      <header className="mk-person">
+        <img src={creatorAvatar(c)} alt="" />
+        <div><h2>Invite {c.name}</h2><p>{c.title} · {rateRange(c)} per project</p><p className="mk-muted">Choose the projects to invite them to. Their proposal appears inside each project.</p></div>
+      </header>
+      {error && <div className="auth-alert error" role="alert">{error}</div>}
+      {usable.length ? (
+        <div className="dc-pick">{usable.map((p) => {
+          const on = !!p.invited?.[c.id];
+          const hired = !!p.hired?.[c.id];
+          const fit = matchScore(c, { niches: p.niches, platforms: p.platforms, languages: p.languages, budgetMax: p.budgetMax });
+          return (
+            <div key={p.id} className={`dc-pick-row${on ? " on" : ""}`}>
+              <div>
+                <b>{p.title}</b>
+                <span>{STATUS_LABEL[p.status]} · {formatINRShort(p.budgetMin)} – {formatINRShort(p.budgetMax)} · {dueLabel(p)}</span>
+                {c.rateFrom > p.budgetMax && <small className="dc-warn">Their rate starts above this budget</small>}
+              </div>
+              <span className={`op2-match ${matchTone(fit)}`}>{fit}% fit</span>
+              {hired ? <span className="pj-tag hired">Hired</span>
+                : <Button kind={on ? "light" : "dark"} onClick={() => toggle(p)}>{busy === p.id ? "Saving…" : on ? <><Icon name="check" size={14} /> Invited</> : p.status === "draft" ? "Publish & invite" : "Invite"}</Button>}
+            </div>
+          );
+        })}</div>
+      ) : (
+        <div className="ov-empty"><Icon name="brief" size={22} /><p>You don't have a live project yet. Create one, then invite {c.name.split(" ")[0]}.</p></div>
+      )}
+      <div className="mk-actions"><Button kind="light" icon="plus" onClick={() => { onClose(); goProjects(); }}>New project</Button></div>
+    </Drawer>
+  );
+}
+
+function CompareDrawer({ ids, want, onClose, onInvite }: { ids: string[]; want: ReturnType<typeof clientWant>; onClose: () => void; onInvite: (c: SeedCreator) => void }) {
+  const people = ids.map((id) => CREATORS.find((c) => c.id === id)!).filter(Boolean);
+  // Every creator tied for the best value in a row gets highlighted.
+  const best = (vals: number[], high = true) => { const top = high ? Math.max(...vals) : Math.min(...vals); return vals.map((v) => v === top); };
+  const rows: [string, (c: SeedCreator) => string, boolean[] | null][] = [
+    ["Match", (c) => `${matchScore(c, want)}%`, best(people.map((c) => matchScore(c, want)))],
+    ["Typical project", (c) => rateRange(c), best(people.map((c) => c.rateFrom), false)],
+    ["Total reach", (c) => formatCount(totalFollowers(c)), best(people.map(totalFollowers))],
+    ["Avg. views", (c) => formatCount(c.avgViews), best(people.map((c) => c.avgViews))],
+    ["Engagement", (c) => `${c.engagement}%`, best(people.map((c) => c.engagement))],
+    ["Rating", (c) => `${c.rating}★ (${c.reviews})`, best(people.map((c) => c.rating * 1000 + c.reviews))],
+    ["Turnaround", (c) => `${c.turnaroundDays} days`, best(people.map((c) => c.turnaroundDays), false)],
+    ["Projects done", (c) => String(c.projects), best(people.map((c) => c.projects))],
+    ["Availability", (c) => c.availability, null],
+    ["Based in", (c) => c.city, null],
+    ["Languages", (c) => c.languages.join(", "), null],
+    ["Niches", (c) => c.niches.join(", "), null],
+    ["Platforms", (c) => c.platforms.map((p) => p.name).join(", "), null],
+  ];
+  return (
+    <Drawer label="Compare creators" onClose={onClose}>
+      <h2 className="pj-form-title">Compare creators</h2>
+      <p className="mk-muted pj-form-sub">The best value in each row is highlighted.</p>
+      <div className="dc-table-wrap">
+        <table className="dc-table">
+          <thead><tr><th />{people.map((c) => <th key={c.id}><img src={creatorAvatar(c)} alt="" /><b>{c.name}</b><span>{c.title}</span></th>)}</tr></thead>
+          <tbody>
+            {rows.map(([label, get, win]) => <tr key={label}><th scope="row">{label}</th>{people.map((c, i) => <td key={c.id} className={people.length > 1 && win?.[i] ? "win" : ""}>{get(c)}</td>)}</tr>)}
+            <tr><th scope="row" />{people.map((c) => <td key={c.id}><Button kind="dark" onClick={() => onInvite(c)}>Invite</Button></td>)}</tr>
+          </tbody>
+        </table>
+      </div>
+    </Drawer>
+  );
+}
+
+function CreatorDrawer({ c, score, reasons, saved, invited, onSave, onInvite, onMessage, onClose }: { c: SeedCreator; score: number; reasons: string[]; saved: boolean; invited: boolean; onSave: () => void; onInvite: () => void; onMessage?: () => void; onClose: () => void }) {
   return (
     <Drawer label={`${c.name} profile`} onClose={onClose}>
       <header className="mk-person">
@@ -599,6 +738,7 @@ function CreatorDrawer({ c, score, reasons, saved, invited, onSave, onInvite, on
       </header>
       <div className="mk-actions">
         <Button kind={invited ? "light" : "dark"} onClick={onInvite}>{invited ? <><Icon name="check" /> Invited to project</> : <>Invite to project <Icon name="send" size={15} /></>}</Button>
+        {onMessage && <Button kind="light" onClick={onMessage}><Icon name="chat" size={15} /> Message</Button>}
         <Button kind="light" onClick={onSave}><Icon name="star" size={15} /> {saved ? "Saved" : "Save"}</Button>
       </div>
       <section className="mk-section mk-match">
@@ -830,7 +970,7 @@ function DashboardOverview({ goCreators, goProjects }: { goCreators: () => void;
       <button className="metric-card mint" onClick={goProjects}><span>ACTIVE PROJECTS</span><b>{String(live.length).padStart(2, "0")}</b><p>{projects.filter((p) => p.status === "draft").length} draft · {projects.filter((p) => p.status === "completed").length} completed</p></button>
       <button className="metric-card lilac" onClick={goCreators}><span>CREATOR MATCHES</span><b>{String(strongCreators).padStart(2, "0")}</b><p>85%+ fit with your brand</p></button>
       <button className="metric-card peach" onClick={goProjects}><span>PROPOSALS TO REVIEW</span><b>{String(proposals).padStart(2, "0")}</b><p>Across your open projects</p></button>
-      <button className="metric-card dark" onClick={goCreators}><span>SAVED CREATORS</span><b>{String(saved.length).padStart(2, "0")}</b><p>{keysOf(profile.invites).length} invited from Discover</p></button>
+      <button className="metric-card dark" onClick={goCreators}><span>SAVED CREATORS</span><b>{String(saved.length).padStart(2, "0")}</b><p>{new Set(projects.flatMap((p) => keysOf(p.invited))).size} invited to projects</p></button>
     </div>
     <div className="dashboard-grid">
       {latest ? (
@@ -1941,7 +2081,7 @@ function AppShell({ role, onSwitch }: { role: Role; onSwitch: () => void }) {
   const page=role==="client"?clientPage:creatorPage;
   let content: ReactNode;
   if(role==="client"){
-    content=clientPage==="home"?<ClientHome goCreators={()=>setClientPage("creators")} goProjects={()=>setClientPage("projects")}/>:clientPage==="creators"?<CreatorMarketplace/>:clientPage==="projects"?<Projects/>:clientPage==="profile"?<ProfilePage/>:<Messages/>;
+    content=clientPage==="home"?<ClientHome goCreators={()=>setClientPage("creators")} goProjects={()=>setClientPage("projects")}/>:clientPage==="creators"?<CreatorMarketplace goProjects={()=>setClientPage("projects")}/>:clientPage==="projects"?<Projects/>:clientPage==="profile"?<ProfilePage/>:<Messages/>;
   } else {
     content=creatorPage==="home"?<CreatorHome go={setCreatorPage}/>:creatorPage==="opportunities"?<Opportunities/>:creatorPage==="messages"?<Messages/>:creatorPage==="studio"?<Studio key={user.uid} userId={user.uid}/>:<ProfilePage/>;
   }
