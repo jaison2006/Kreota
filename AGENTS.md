@@ -1,12 +1,12 @@
-# figma-make-app
+# Kreota
 
-React + Vite + Tailwind CSS project running inside Figma Make.
+React + Vite + Tailwind CSS prototype of Kreota, an AI content creator marketplace.
 
 ## Development Server
 
-A Vite development server is **already running** on `$PORT` (default 8443). You don't need to start it manually.
+Start the Vite development server with `pnpm dev`. It runs on `$PORT` (default 8443).
 
-- Preview URL: The user can access the running app through the preview panel
+- Preview URL: http://localhost:8443/
 - Hot reload: Changes to source files are reflected immediately
 
 ## Project Structure
@@ -18,7 +18,7 @@ This is the canonical project structure. Start with task-relevant files below. O
 - `src/index.css` - Global CSS entrypoint and Tailwind CSS v4 import
 - `index.html` - Vite HTML shell containing the `#root` element and loading `src/main.tsx`
 - `package.json` - Project dependencies and the Vite build, development, preview, and formatting scripts
-- `vite.config.ts` - Vite configuration with React, Tailwind CSS v4, and Figma Make plugins plus the `@` alias for `src`
+- `vite.config.ts` - Vite configuration with React and Tailwind CSS v4 plugins plus the `@` alias for `src`
 - `.mise.toml` - Toolchain versions for Node.js and pnpm
 
 ## Dependencies
