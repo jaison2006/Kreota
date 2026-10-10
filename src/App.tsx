@@ -3,11 +3,12 @@ import type { User } from "firebase/auth";
 import Studio from "./studio/Studio";
 import {
   completeOnboarding, describeError, resendVerification, resetPassword, saveOnboardingStep, setRole, signInWithEmail,
-  createProject, deleteProject, saveProfileFields, seedInterested, seedSampleProject, setListed, updateProject, type ClientProject, type ProjectDraft, type ProjectStatus, signInWithGoogle, signOutUser, signUpWithEmail, updateDisplayName, useSession, type FormValues, type Profile, type Role,
+  createProject, deleteProject, deleteStrategy, saveStrategy, saveProfileFields, seedInterested, seedSampleProject, setListed, updateProject, type ClientProject, type ProjectDraft, type ProjectStatus, signInWithGoogle, signOutUser, signUpWithEmail, updateDisplayName, useSession, type FormValues, type Profile, type Role,
 } from "./session";
 import { OPTIONS, ROLE_FIELDS, toLink, type FieldSection } from "./profileFields";
 import { between, CLIENTS, CREATORS, roundTo, seeded, formatCount, formatINR, formatINRShort, matchScore, totalFollowers, type SeedClient, type SeedCreator } from "./data/india";
 import { creatorAvatar } from "./data/avatars";
+import { generateStrategy, strategyToMarkdown, type Engine, type Strategy, type StrategyInput } from "./strategy";
 import { conversationId, DEMO_CONTACTS, FileTooLargeError, loadFileData, MAX_FILE_BYTES, sendDemoFile, sendFile, type FileMeta, demoIdOf, isDemoId, markDemoRead, markRead, openConversation, openDemoConversation, publishDirectoryEntry, sendDemoMessage, sendMessage, useDemoInbox, useDemoMessages, useDirectory, useInbox, useMessages, type Contact, type DirectoryEntry } from "./messaging";
 
 interface Account { user: User; profile: Profile }
@@ -345,21 +346,254 @@ function Topbar({ title, subtitle }: { title: string; subtitle?: string }) {
   return <header className="topbar"><div><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div><div className="top-actions"><button className="icon-btn" aria-label="Search"><Icon name="search" /></button><button className="icon-btn badge" aria-label="Notifications"><Icon name="bell" /></button><AccountMenu /></div></header>;
 }
 
+const QUICK_PROMPTS: [string, string][] = [
+  ["Product launch", "Launch our new product to young Indians in metros with honest creator reviews and a strong first-week buzz."],
+  ["Festive campaign", "Plan a Diwali festive gifting campaign that makes our products the go-to gift, with regional creators across India."],
+  ["UGC ads", "Create UGC-style short videos we can run as performance ads to drive orders with creator discount codes."],
+  ["Regional reach", "Grow in Tier 2 cities with Hindi, Tamil and Telugu creators who explain our product in local language."],
+];
+const WS_PLATFORMS = ["Instagram", "YouTube Shorts", "YouTube", "Moj", "Josh", "ShareChat", "LinkedIn"];
+const WS_LANGUAGES = ["Hindi", "English", "Tamil", "Telugu", "Kannada", "Malayalam", "Bengali", "Marathi", "Gujarati", "Punjabi"];
+
+interface WsResult { input: StrategyInput; strategy: Strategy; engine: Engine; notice?: string; savedId?: string }
+
 function ClientHome({ goCreators, goProjects }: { goCreators: () => void; goProjects: () => void }) {
-  const { profile } = useAccount();
-  const [generated, setGenerated] = useState(false);
+  const { user, profile } = useAccount();
+  const cl = profile.client ?? {};
   const [prompt, setPrompt] = useState("");
+  const [objective, setObjective] = useState((cl.goal as string) || OPTIONS.goal[0]);
+  const [budget, setBudget] = useState("150000");
+  const [weeks, setWeeks] = useState(4);
+  const [platforms, setPlatforms] = useState<string[]>(CHANNEL_PLATFORMS[cl.channels as string] ?? ["Instagram", "YouTube Shorts"]);
+  const [languages, setLanguages] = useState<string[]>(["Hindi", "English"]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<WsResult | null>(null);
+  const saved = Object.entries(profile.strategies ?? {}).map(([id, s]) => ({ id, ...s })).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+
+  const generate = async () => {
+    const amount = Number(budget.replace(/[^\d]/g, ""));
+    if (prompt.trim().length < 12) { setError("Describe what you want to create in a sentence or two."); return; }
+    if (!amount || amount < 5000) { setError("Enter a budget of at least ₹5,000."); return; }
+    if (!platforms.length) { setError("Pick at least one platform."); return; }
+    setError("");
+    setBusy(true);
+    const input: StrategyInput = {
+      prompt: prompt.trim(), objective, budget: amount, weeks, platforms, languages,
+      brand: (cl.brand as string) || "", industry: (cl.industry as string) || "", description: (cl.description as string) || "", tone: (cl.tone as string) || "",
+    };
+    try {
+      const r = await generateStrategy(input);
+      setResult({ input, ...r });
+      setTimeout(() => document.querySelector(".ws-report")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return <>
     <Topbar title={`${greeting()}, ${firstName(profile)}.`} subtitle="What are we creating today?" />
-    <div className="page-content client-home">
-      <section className="ai-composer">
-        <div className="composer-label"><Icon name="spark" /><span>KREOTA INTELLIGENCE</span></div>
-        <textarea value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Describe your product, audience and what you want to create..." />
-        <div className="composer-footer"><div className="prompt-chips"><button onClick={() => setPrompt("Launch campaign for our new adaptogenic sparkling water")}>Product launch</button><button onClick={() => setPrompt("Create a 30-day social content plan for Gen Z")}>Social strategy</button><button onClick={() => setPrompt("Find an authentic creator for our wellness campaign")}>Find creators</button></div><Button kind="accent" icon="spark" onClick={() => setGenerated(true)}>Build my strategy</Button></div>
+    <div className="page-content client-home ws">
+      <section className="ai-composer ws-composer">
+        <div className="composer-label"><Icon name="spark" /><span>KREOTA INTELLIGENCE</span><em className="ws-engine">Gemini · with built-in planner fallback</em></div>
+        <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Describe your product, audience and what you want to create…" aria-label="Describe your campaign" maxLength={1500} />
+        <div className="ws-chips">{QUICK_PROMPTS.map(([label, text]) => <button key={label} onClick={() => setPrompt(text)}>{label}</button>)}</div>
+        <div className="ws-settings">
+          <label>Objective<select value={objective} onChange={(e) => setObjective(e.target.value)}>{OPTIONS.goal.map((g) => <option key={g}>{g}</option>)}</select></label>
+          <label>Budget (₹)<input inputMode="numeric" value={budget} onChange={(e) => setBudget(e.target.value)} /></label>
+          <label>Timeline<select value={weeks} onChange={(e) => setWeeks(Number(e.target.value))}>{[2, 3, 4, 6, 8].map((w) => <option key={w} value={w}>{w} weeks</option>)}</select></label>
+        </div>
+        <div className="ws-pickers">
+          <div><span>Platforms</span><ChipPicker label="Platforms" options={WS_PLATFORMS} value={platforms} onChange={setPlatforms} /></div>
+          <div><span>Languages</span><ChipPicker label="Languages" options={WS_LANGUAGES} value={languages} onChange={setLanguages} /></div>
+        </div>
+        {error && <div className="ws-error" role="alert">{error}</div>}
+        <div className="composer-footer">
+          <span className="ws-hint">Uses your brand profile{cl.brand ? ` (${cl.brand as string})` : ""} and Kreota's creator data.</span>
+          <Button kind="accent" onClick={generate}>{busy ? <><span className="splash-spinner ws-spin" /> Writing strategy…</> : <><Icon name="spark" size={16} /> {result ? "Regenerate" : "Generate strategy"}</>}</Button>
+        </div>
       </section>
-      {generated ? <StrategyReport goCreators={goCreators} /> : <DashboardOverview goCreators={goCreators} goProjects={goProjects} />}
+
+      {busy && !result && <div className="ws-loading"><span className="splash-spinner" /><p>Writing your strategy — audience, hooks, content plan and budget…</p></div>}
+
+      {result ? (
+        <StrategyView
+          r={result}
+          onClose={() => setResult(null)}
+          onSaved={(id) => setResult((x) => (x ? { ...x, savedId: id } : x))}
+          goCreators={goCreators}
+          goProjects={goProjects}
+        />
+      ) : (
+        <>
+          {saved.length > 0 && (
+            <section className="ws-saved">
+              <div className="section-title"><div><h2>Saved strategies</h2><p>Plans you've kept from the AI workspace.</p></div></div>
+              <div className="ws-saved-grid">{saved.slice(0, 6).map((s) => (
+                <article key={s.id} className="ws-saved-card">
+                  <span className={`ws-badge ${s.engine}`}>{s.engine === "gemini" ? "Gemini" : "Kreota planner"}</span>
+                  <b>{s.strategy.title}</b>
+                  <p>{s.strategy.summary}</p>
+                  <small>{fmtWhen(s.createdAt)} · {formatINRShort(s.input.budget)} · {s.input.weeks} weeks</small>
+                  <div className="ws-saved-actions">
+                    <Button kind="dark" onClick={() => setResult({ input: s.input, strategy: s.strategy, engine: s.engine, savedId: s.id })}>Open</Button>
+                    <button className="text-button" onClick={() => { if (window.confirm("Delete this saved strategy?")) deleteStrategy(user.uid, s.id); }}>Delete</button>
+                  </div>
+                </article>
+              ))}</div>
+            </section>
+          )}
+          <DashboardOverview goCreators={goCreators} goProjects={goProjects} />
+        </>
+      )}
     </div>
   </>;
+}
+
+function StrategyView({ r, onClose, onSaved, goCreators, goProjects }: { r: WsResult; onClose: () => void; onSaved: (id: string) => void; goCreators: () => void; goProjects: () => void }) {
+  const { user } = useAccount();
+  const { openChat } = useContext(ShellContext);
+  const { strategy: s, input } = r;
+  const [busy, setBusy] = useState("");
+  const [msg, setMsg] = useState("");
+  const want = { niches: s.creatorNiches, platforms: input.platforms, languages: input.languages, budgetMax: input.budget * 0.6 };
+  const creators = CREATORS.map((c) => ({ c, score: matchScore(c, want) })).sort((a, b) => b.score - a.score).slice(0, 4);
+  const colors = ["#cdfc82", "#e9e1ff", "#ffeadc", "#e0efff", "#fdf0c4", "#ffe0ea"];
+
+  const save = async () => {
+    setBusy("save");
+    try { onSaved(await saveStrategy(user.uid, { input, strategy: s, engine: r.engine })); setMsg("Saved to your workspace."); }
+    catch (e) { setMsg(describeError(e)); }
+    finally { setBusy(""); }
+  };
+  const toProject = async () => {
+    setBusy("project");
+    try {
+      const deliverables = s.contentPlan.map((c) => `${c.count} × ${c.format} on ${c.platform} (${c.length})`);
+      await createProject(user.uid, {
+        title: s.title.slice(0, 120), objective: s.summary, deliverables,
+        platforms: [...new Set([...input.platforms, ...s.contentPlan.map((c) => c.platform).filter((p) => PLATFORMS.includes(p))])],
+        niches: s.creatorNiches.slice(0, 5), languages: input.languages,
+        budgetMin: roundTo(input.budget * 0.6, 1000), budgetMax: input.budget,
+        deadline: new Date(Date.now() + input.weeks * 7 * 86400000).toISOString().slice(0, 10),
+        creatorsNeeded: Math.max(2, Math.min(6, s.contentPlan.length)), status: "draft",
+      });
+      goProjects();
+    } catch (e) {
+      setMsg(describeError(e));
+      setBusy("");
+    }
+  };
+  const download = () => {
+    const blob = new Blob([strategyToMarkdown(s, input)], { type: "text/markdown" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${s.title.replace(/[^\w]+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "strategy"}.md`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  };
+
+  return (
+    <section className="ws-report" aria-label="Campaign strategy">
+      {r.notice && <div className="ws-notice" role="status"><Icon name="spark" size={14} /><span>{r.notice}{r.notice.includes("isn't switched on") && <> <a href="https://console.firebase.google.com/project/kreota-83c24/ailogic/" target="_blank" rel="noopener noreferrer">Turn on Gemini →</a></>}</span></div>}
+      <header className="ws-head">
+        <div>
+          <span className={`ws-badge ${r.engine}`}>{r.engine === "gemini" ? "Written by Gemini" : "Kreota planner"}</span>
+          <h2>{s.title}</h2>
+          <p>{s.summary}</p>
+          <div className="op2-tags"><span className="plat">{formatINR(input.budget)}</span><span className="plat">{input.weeks} weeks</span>{input.platforms.map((p) => <span key={p}>{p}</span>)}{input.languages.map((l) => <span key={l}>{l}</span>)}</div>
+        </div>
+        <div className="ws-head-actions">
+          <Button kind="accent" onClick={toProject}>{busy === "project" ? "Creating…" : <>Turn into project <Icon name="arrow" size={15} /></>}</Button>
+          <Button kind="light" onClick={save}>{r.savedId ? <><Icon name="check" size={15} /> Saved</> : busy === "save" ? "Saving…" : "Save"}</Button>
+          <Button kind="light" onClick={download}><Icon name="download" size={15} /> Download</Button>
+          <button className="text-button" onClick={onClose}>Close</button>
+        </div>
+      </header>
+      {msg && <p className="ws-msg">{msg}</p>}
+
+      <div className="ws-grid">
+        <section className="ws-card ws-audience">
+          <h3><Icon name="users" size={16} /> Audience</h3>
+          <p className="ws-big">{s.audience.primary}</p>
+          <p className="ws-insight"><b>Insight</b> {s.audience.insight}</p>
+        </section>
+
+        <section className="ws-card ws-hooks">
+          <h3><Icon name="spark" size={16} /> Hooks to test</h3>
+          <ol>{s.hooks.map((h, i) => <li key={i}><span>{String(i + 1).padStart(2, "0")}</span>{h}</li>)}</ol>
+        </section>
+
+        <section className="ws-card ws-wide">
+          <h3>Messaging pillars</h3>
+          <div className="ws-pillars">{s.pillars.map((p, i) => <article key={i} style={{ background: colors[(i + 1) % colors.length] }}><b>{p.name}</b><p>{p.message}</p></article>)}</div>
+        </section>
+
+        <section className="ws-card ws-wide">
+          <h3><Icon name="video" size={16} /> Content plan</h3>
+          <div className="dc-table-wrap ws-table-wrap">
+            <table className="dc-table ws-table">
+              <thead><tr><th>Format</th><th>Platform</th><th>Count</th><th>Length</th><th>Purpose</th></tr></thead>
+              <tbody>{s.contentPlan.map((c, i) => <tr key={i}><td><b>{c.format}</b></td><td>{c.platform}</td><td>{c.count}</td><td>{c.length}</td><td>{c.purpose}</td></tr>)}</tbody>
+            </table>
+          </div>
+        </section>
+
+        <section className="ws-card">
+          <h3>Creative direction</h3>
+          <dl className="ws-dl">
+            <div><dt>Mood</dt><dd>{s.creative.mood}</dd></div>
+            <div><dt>Visuals</dt><dd>{s.creative.visuals}</dd></div>
+            <div><dt>Tone</dt><dd>{s.creative.tone}</dd></div>
+          </dl>
+          <h4>Avoid</h4>
+          <div className="op2-tags">{s.creative.avoid.map((a) => <span key={a} className="ws-avoid">{a}</span>)}</div>
+        </section>
+
+        <section className="ws-card">
+          <h3><Icon name="calendar" size={16} /> Timeline</h3>
+          <ol className="ws-timeline">{s.timeline.map((t, i) => <li key={i}><b>{t.week}</b><span>{t.focus}</span></li>)}</ol>
+        </section>
+
+        <section className="ws-card">
+          <h3>Budget split</h3>
+          <div className="ws-bar" role="img" aria-label="Budget split">{s.budget.map((b, i) => <span key={b.item} style={{ width: `${b.percent}%`, background: colors[i % colors.length] }} title={`${b.item} ${b.percent}%`} />)}</div>
+          <ul className="ws-budget">{s.budget.map((b, i) => <li key={b.item}><i style={{ background: colors[i % colors.length] }} /><span>{b.item}</span><b>{b.percent}%</b><em>{formatINRShort(Math.round((input.budget * b.percent) / 100))}</em></li>)}</ul>
+        </section>
+
+        <section className="ws-card">
+          <h3>KPIs</h3>
+          <div className="ws-kpis">{s.kpis.map((k) => <div key={k.metric}><span>{k.metric}</span><b>{k.target}</b></div>)}</div>
+        </section>
+
+        <section className="ws-card">
+          <h3>Risks to watch</h3>
+          <ul className="ws-list warn">{s.risks.map((x) => <li key={x}>{x}</li>)}</ul>
+        </section>
+
+        <section className="ws-card">
+          <h3>Next actions</h3>
+          <ul className="ws-list">{s.nextActions.map((x) => <li key={x}><Icon name="check" size={14} /> {x}</li>)}</ul>
+        </section>
+
+        <section className="ws-card ws-wide">
+          <div className="panel-head"><div><span>MATCHED TO THIS STRATEGY</span><h3>Creators to brief</h3></div><button className="text-button" onClick={goCreators}>Discover more <Icon name="arrow" size={14} /></button></div>
+          <div className="ws-creators">{creators.map(({ c, score }) => (
+            <article key={c.id}>
+              <img src={creatorAvatar(c)} alt="" />
+              <div><b>{c.name}</b><span>{c.title} · {c.city}</span><span>{rateRange(c)} · {c.niches.slice(0, 2).join(", ")}</span></div>
+              <span className={`op2-match ${matchTone(score)}`}>{score}%</span>
+              <button className="ws-msg-btn" onClick={() => openChat(c.id)} aria-label={`Message ${c.name}`}><Icon name="chat" size={15} /></button>
+            </article>
+          ))}</div>
+        </section>
+      </div>
+    </section>
+  );
 }
 
 /* ---------- marketplace data helpers ---------- */
@@ -993,17 +1227,6 @@ function DashboardOverview({ goCreators, goProjects }: { goCreators: () => void;
   </>;
 }
 
-function StrategyReport({ goCreators }: { goCreators: () => void }) {
-  return <section className="strategy">
-    <div className="strategy-head"><div><span className="success-pill"><Icon name="check" size={13}/> STRATEGY READY</span><h2>Adaptogenic hydration launch</h2><p>A creator-led content system designed for discovery, trust and conversion.</p></div><Button kind="light">Export brief</Button></div>
-    <div className="strategy-grid">
-      <div className="strategy-card"><span className="number">01</span><Icon name="users"/><h3>Audience angle</h3><p>Lead with the 3pm energy dip. Position the product as a calm, credible ritual—not another quick fix.</p><div className="tag-row"><span>Gen Z wellness</span><span>Young professionals</span></div></div>
-      <div className="strategy-card lilac"><span className="number">02</span><Icon name="video"/><h3>Content system</h3><p>Build a 3-part vertical series: problem-aware hook, creator routine, and 7-day honest review.</p><div className="tag-row"><span>9:16 video</span><span>15–30 sec</span></div></div>
-      <div className="strategy-card peach"><span className="number">03</span><Icon name="spark"/><h3>Creative direction</h3><p>Natural morning light, tactile product moments and quiet confidence. Avoid over-polished studio tropes.</p><div className="tag-row"><span>Candid</span><span>Warm minimal</span></div></div>
-    </div>
-    <div className="creator-cta"><div className="cta-icon"><Icon name="users" size={24}/></div><div><span>NEXT BEST ACTION</span><h3>Find the right voices for this campaign</h3><p>We found 18 creators with audience, style and performance fit.</p></div><Button icon="arrow" onClick={goCreators}>See creator shortlist</Button></div>
-  </section>;
-}
 
 /* ---------- client projects ---------- */
 

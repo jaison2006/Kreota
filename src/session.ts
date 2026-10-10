@@ -14,6 +14,7 @@ import {
 } from "firebase/auth";
 import { onValue, push, ref, runTransaction, serverTimestamp, update } from "firebase/database";
 import { auth, db } from "./firebase";
+import type { Engine, Strategy, StrategyInput } from "./strategy";
 
 export type Role = "client" | "creator";
 export type FormValues = Record<string, string | boolean>;
@@ -39,6 +40,15 @@ export interface Profile {
   seeded?: Record<string, boolean>;
   /** Client projects, keyed by project id. */
   projects?: Record<string, ClientProject>;
+  /** Saved AI workspace strategies, keyed by id. */
+  strategies?: Record<string, SavedStrategy>;
+}
+
+export interface SavedStrategy {
+  input: StrategyInput;
+  strategy: Strategy;
+  engine: Engine;
+  createdAt: number;
 }
 
 export type ProjectStatus = "draft" | "open" | "in_progress" | "completed";
@@ -224,6 +234,16 @@ export async function seedSampleProject(uid: string, data: ProjectDraft) {
     [projectPath(uid, pid)]: { ...data, sample: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), milestones: { publishedAt: serverTimestamp() } },
   });
 }
+
+/* ---------- AI workspace strategies ---------- */
+
+export async function saveStrategy(uid: string, data: Omit<SavedStrategy, "createdAt">): Promise<string> {
+  const sid = push(ref(db, `users/${uid}/strategies`)).key!;
+  await update(userRef(uid), { [`strategies/${sid}`]: { ...data, createdAt: serverTimestamp() } });
+  return sid;
+}
+
+export const deleteStrategy = (uid: string, sid: string) => update(userRef(uid), { [`strategies/${sid}`]: null });
 
 /** Saves edits made on the profile page. */
 export const saveProfileFields = (uid: string, role: Role, values: FormValues) =>
