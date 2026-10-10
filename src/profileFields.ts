@@ -2,13 +2,13 @@ import type { Role } from "./session";
 
 export const OPTIONS = {
   category: ["Video & UGC", "Photography", "Design & motion", "Writing & strategy"],
-  rate: ["$1,000 – $2,500", "$500 – $1,000", "$2,500 – $5,000"],
+  rate: ["₹10,000 – ₹25,000", "₹25,000 – ₹75,000", "₹75,000 – ₹2,00,000", "₹2,00,000+"],
   availability: ["20+ hours", "10–20 hours", "Under 10 hours"],
-  industry: ["Consumer technology", "Beauty & wellness", "Fashion", "Food & beverage"],
+  industry: ["Consumer technology", "Beauty & wellness", "Fashion", "Food & beverage", "Fintech", "Education", "Travel & hospitality", "Home & living", "Automotive & EV", "Health & nutrition"],
   size: ["1–10 people", "11–50 people", "51–200 people", "200+ people"],
   goal: ["Launch a new product", "Build brand awareness", "Drive conversions", "Always-on social content"],
-  budget: ["$5k – $15k", "Under $5k", "$15k – $50k", "$50k+"],
-  channels: ["TikTok & Instagram", "YouTube", "Paid social", "Multi-channel"],
+  budget: ["Under ₹50,000", "₹50,000 – ₹2,00,000", "₹2,00,000 – ₹10,00,000", "₹10,00,000+"],
+  channels: ["Instagram & YouTube Shorts", "YouTube", "Regional apps (Moj, Josh, ShareChat)", "LinkedIn", "Multi-channel"],
 };
 
 export interface FieldDef {

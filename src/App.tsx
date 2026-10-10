@@ -3,9 +3,12 @@ import type { User } from "firebase/auth";
 import Studio from "./studio/Studio";
 import {
   completeOnboarding, describeError, resendVerification, resetPassword, saveOnboardingStep, setRole, signInWithEmail,
-  saveProfileFields, signInWithGoogle, signOutUser, signUpWithEmail, updateDisplayName, useSession, type FormValues, type Profile, type Role,
+  saveProfileFields, setListed, signInWithGoogle, signOutUser, signUpWithEmail, updateDisplayName, useSession, type FormValues, type Profile, type Role,
 } from "./session";
 import { OPTIONS, ROLE_FIELDS, toLink, type FieldSection } from "./profileFields";
+import { CLIENTS, CREATORS, formatCount, formatINR, formatINRShort, matchScore, totalFollowers, type SeedClient, type SeedCreator } from "./data/india";
+import { creatorAvatar } from "./data/avatars";
+import { conversationId, DEMO_CONTACTS, demoIdOf, isDemoId, markDemoRead, markRead, openConversation, openDemoConversation, publishDirectoryEntry, sendDemoMessage, sendMessage, useDemoInbox, useDemoMessages, useDirectory, useInbox, useMessages, type Contact, type DirectoryEntry } from "./messaging";
 
 interface Account { user: User; profile: Profile }
 const AccountContext = createContext<Account | null>(null);
@@ -27,20 +30,6 @@ function Avatar({ profile, role }: { profile: Profile; role: Role }) {
 }
 type ClientPage = "home" | "creators" | "projects" | "messages" | "profile";
 type CreatorPage = "home" | "opportunities" | "messages" | "studio" | "profile";
-
-const photos = [
-  "https://images.unsplash.com/photo-1787647561687-fd0b69654aea?auto=format&fit=crop&w=500&q=85",
-  "https://images.unsplash.com/photo-1544168190-79c17527004f?auto=format&fit=crop&w=500&q=85",
-  "https://images.unsplash.com/photo-1648662199460-34b7597ba771?auto=format&fit=crop&w=500&q=85",
-  "https://images.unsplash.com/photo-1753164597539-af93605a9178?auto=format&fit=crop&w=500&q=85",
-];
-
-const creators = [
-  { name: "Maya Chen", role: "UGC Director", match: 98, rate: "$1.8k", tags: ["Beauty", "Short-form", "Gen Z"], photo: photos[0], tone: "mint" },
-  { name: "Theo Brooks", role: "Product Filmmaker", match: 95, rate: "$2.4k", tags: ["Tech", "Motion", "YouTube"], photo: photos[1], tone: "lilac" },
-  { name: "Sofia Marin", role: "Lifestyle Creator", match: 93, rate: "$1.6k", tags: ["Wellness", "TikTok", "UGC"], photo: photos[2], tone: "peach" },
-  { name: "Noa Williams", role: "Social Storyteller", match: 89, rate: "$1.4k", tags: ["Fashion", "Reels", "Strategy"], photo: photos[3], tone: "blue" },
-];
 
 const iconPaths: Record<string, ReactNode> = {
   home: <><path d="m3 10 9-7 9 7" /><path d="M5 9v11h14V9" /><path d="M9 20v-6h6v6" /></>,
@@ -127,7 +116,7 @@ function Auth() {
           <h1>From brief to<br /><em>brilliant.</em></h1>
           <p>Build standout content with AI intelligence and the world’s most relevant creators.</p>
           <div className="story-proof">
-            <div className="avatar-stack">{photos.slice(0, 3).map((p) => <img src={p} key={p} alt="" />)}<b>+2k</b></div>
+            <div className="avatar-stack">{CREATORS.slice(0, 3).map((c) => <img src={creatorAvatar(c)} key={c.id} alt="" />)}<b>+{CREATORS.length - 3}</b></div>
             <span>Trusted by ambitious creative teams</span>
           </div>
         </div>
@@ -195,7 +184,7 @@ function RoleSelect({ onSelect }: { onSelect: (r: Role) => void }) {
             <div className="role-copy"><div className="role-icon"><Icon name="brief" /></div><div><h3>I’m a client</h3><p>Plan campaigns, discover creators and manage content from one place.</p><span className="role-link">Build with creators <Icon name="arrow" size={15} /></span></div></div>
           </button>
           <button className="role-card creator" onClick={() => onSelect("creator")}>
-            <div className="role-visual"><div className="video-frame"><Icon name="play" size={25} /></div><div className="float-card c"><span>New invite</span><b>$2,400</b></div></div>
+            <div className="role-visual"><div className="video-frame"><Icon name="play" size={25} /></div><div className="float-card c"><span>New invite</span><b>₹45,000</b></div></div>
             <div className="role-copy"><div className="role-icon"><Icon name="video" /></div><div><h3>I’m a creator</h3><p>Find aligned projects, create with AI and grow your creative business.</p><span className="role-link">Create your profile <Icon name="arrow" size={15} /></span></div></div>
           </button>
         </div>
@@ -301,13 +290,16 @@ function Onboarding({ role }: { role: Role }) {
 }
 
 function Sidebar({ role, page, onPage, onSwitch }: { role: Role; page: string; onPage: (p: any) => void; onSwitch: () => void }) {
-  const { profile } = useAccount();
+  const { profile, user } = useAccount();
+  const inboxRows = useInbox(user.uid).data;
+  const demoRows = useDemoInbox(user.uid).data;
+  const unread = [...inboxRows, ...demoRows].reduce((n, r) => n + (r.unread ?? 0), 0);
   const clientNav = [["home","home","AI workspace"],["creators","users","Discover creators"],["projects","brief","Projects"],["messages","chat","Messages"],["profile","users","My profile"]];
   const creatorNav = [["home","home","Overview"],["opportunities","brief","Opportunities"],["messages","chat","Messages"],["studio","spark","Kreota Studio"],["profile","users","My profile"]];
   const nav = role === "client" ? clientNav : creatorNav;
   return <aside className="sidebar">
     <Logo />
-    <nav>{nav.map(([id, icon, label]) => <button key={id} className={page === id ? "active" : ""} onClick={() => onPage(id)}><Icon name={icon} /><span>{label}</span>{id === "messages" && <i>3</i>}{id === "studio" && <small>AI</small>}</button>)}</nav>
+    <nav>{nav.map(([id, icon, label]) => <button key={id} className={page === id ? "active" : ""} onClick={() => onPage(id)}><Icon name={icon} /><span>{label}</span>{id === "messages" && unread > 0 && <i aria-label={`${unread} unread`}>{unread > 99 ? "99+" : unread}</i>}{id === "studio" && <small>AI</small>}</button>)}</nav>
     <div className="sidebar-bottom">
       <div className="switcher"><Avatar profile={profile} role={role} /><div><b>{profile.name}</b><span>{workspaceLabel(profile, role)}</span></div><button className="sidebar-signout" onClick={() => signOutUser()} title="Sign out" aria-label="Sign out"><Icon name="logout" size={16} /></button></div>
       <button className="switch-role" onClick={onSwitch}>Switch to {role === "client" ? "creator" : "client"} workspace <Icon name="arrow" size={14} /></button>
@@ -366,7 +358,376 @@ function ClientHome({ goCreators }: { goCreators: () => void }) {
   </>;
 }
 
+/* ---------- marketplace data helpers ---------- */
+
+const INDUSTRY_NICHES: Record<string, string[]> = {
+  "Consumer technology": ["Tech", "Gadgets", "Smartphones"],
+  "Beauty & wellness": ["Beauty", "Skincare", "Makeup", "Wellness"],
+  Fashion: ["Fashion", "Ethnic wear", "Menswear"],
+  "Food & beverage": ["Food", "Home cooking", "Street food"],
+  Fintech: ["Personal finance", "Fintech"],
+  Education: ["Education", "Careers", "Exams"],
+  "Travel & hospitality": ["Travel", "Adventure"],
+  "Home & living": ["Home decor", "DIY"],
+  "Automotive & EV": ["Auto", "EV", "Bikes"],
+  "Health & nutrition": ["Fitness", "Nutrition", "Wellness"],
+};
+const CHANNEL_PLATFORMS: Record<string, string[]> = {
+  "Instagram & YouTube Shorts": ["Instagram", "YouTube Shorts"],
+  YouTube: ["YouTube"],
+  "Regional apps (Moj, Josh, ShareChat)": ["Moj", "Josh", "ShareChat"],
+  LinkedIn: ["LinkedIn"],
+  "Multi-channel": ["Instagram", "YouTube"],
+};
+
+/** What a signed-in client is looking for, read from their onboarding answers. */
+function clientWant(p: Profile) {
+  const c = p.client ?? {};
+  return {
+    niches: INDUSTRY_NICHES[c.industry as string] ?? [],
+    platforms: CHANNEL_PLATFORMS[c.channels as string] ?? ["Instagram"],
+    languages: ["Hindi", "English"],
+  };
+}
+
+function matchReasons(c: SeedCreator, want: ReturnType<typeof clientWant>) {
+  const reasons: string[] = [];
+  const shared = c.niches.filter((n) => want.niches.includes(n));
+  if (shared.length) reasons.push(`Creates ${shared.join(", ").toLowerCase()} content your audience follows`);
+  const plat = c.platforms.filter((p) => want.platforms.some((w) => p.name.startsWith(w) || w.startsWith(p.name))).map((p) => p.name);
+  if (plat.length) reasons.push(`Strong on ${plat.join(" and ")}, your main channels`);
+  reasons.push(`${c.engagement}% engagement and ${c.rating}★ from ${c.reviews} brand reviews`);
+  if (c.availability === "Available now") reasons.push("Available to start now");
+  return reasons;
+}
+
+/** How well a brand brief fits the signed-in creator, from their skills and category. */
+function briefScore(b: SeedClient, p: Profile) {
+  const words = `${p.creator?.skills ?? ""} ${p.creator?.category ?? ""} ${p.creator?.bio ?? ""}`.toLowerCase();
+  let score = 64 + (b.id.charCodeAt(2) % 7);
+  for (const n of b.brief.niches) if (words.includes(n.toLowerCase())) score += 10;
+  if ((p.creator?.category as string)?.includes("Video") && b.brief.deliverables.some((d) => /reel|video|short|film/i.test(d))) score += 6;
+  if ((p.creator?.category as string)?.includes("Photo") && b.brief.deliverables.some((d) => /still|shoot|photo|lookbook/i.test(d))) score += 8;
+  if ((p.creator?.category as string)?.includes("Design") && b.brief.deliverables.some((d) => /motion|3d|render|design/i.test(d))) score += 8;
+  if ((p.creator?.category as string)?.includes("Writing") && b.brief.deliverables.some((d) => /linkedin|carousel|explainer|post/i.test(d))) score += 8;
+  return Math.min(99, score);
+}
+
+const rateRange = (c: SeedCreator) => `${formatINRShort(c.rateFrom)} – ${formatINRShort(c.rateTo)}`;
+const briefBudget = (b: SeedClient) => `${formatINRShort(b.brief.budget[0])} – ${formatINRShort(b.brief.budget[1])}`;
+const postedLabel = (d: number) => (d === 0 ? "Posted today" : d === 1 ? "Posted yesterday" : `Posted ${d} days ago`);
+const monogram = (name: string) => name.split(/\s+/).filter((w) => /[A-Za-z]/.test(w[0] ?? "")).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
+const uniq = (xs: string[]) => [...new Set(xs)].sort((a, b) => a.localeCompare(b));
+
+function BrandMark({ client, size = 40 }: { client: SeedClient; size?: number }) {
+  return <span className="mk-brandmark" style={{ background: client.color, width: size, height: size, fontSize: size * 0.36 }}>{monogram(client.brand)}</span>;
+}
+
+/* ---------- side drawer ---------- */
+
+function Drawer({ label, onClose, children }: { label: string; onClose: () => void; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    ref.current?.focus();
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => { window.removeEventListener("keydown", onKey); document.body.style.overflow = ""; prev?.focus(); };
+  }, [onClose]);
+  return (
+    <div className="mk-drawer-bg" onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="mk-drawer" role="dialog" aria-modal="true" aria-label={label} tabIndex={-1} ref={ref}>
+        <button className="icon-btn mk-drawer-close" onClick={onClose} aria-label="Close"><Icon name="plus" /></button>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Discover creators (client) ---------- */
+
+type CreatorSort = "match" | "followers" | "engagement" | "rating" | "priceLow" | "priceHigh";
+
+function CreatorMarketplace() {
+  const { user, profile } = useAccount();
+  const want = clientWant(profile);
+  const saved = profile.shortlist ?? {};
+  const invited = profile.invites ?? {};
+  const [q, setQ] = useState("");
+  const [niche, setNiche] = useState("");
+  const [city, setCity] = useState("");
+  const [language, setLanguage] = useState("");
+  const [platform, setPlatform] = useState("");
+  const [maxRate, setMaxRate] = useState(0);
+  const [sort, setSort] = useState<CreatorSort>("match");
+  const [savedOnly, setSavedOnly] = useState(false);
+  const [availableOnly, setAvailableOnly] = useState(false);
+  const [open, setOpen] = useState<SeedCreator | null>(null);
+
+  const scored = CREATORS.map((c) => ({ c, score: matchScore(c, want) }));
+  const needle = q.trim().toLowerCase();
+  const list = scored
+    .filter(({ c }) => !needle || `${c.name} ${c.handle} ${c.title} ${c.city} ${c.state} ${c.niches.join(" ")} ${c.languages.join(" ")}`.toLowerCase().includes(needle))
+    .filter(({ c }) => !niche || c.niches.includes(niche))
+    .filter(({ c }) => !city || c.city === city)
+    .filter(({ c }) => !language || c.languages.includes(language))
+    .filter(({ c }) => !platform || c.platforms.some((p) => p.name === platform))
+    .filter(({ c }) => !maxRate || c.rateFrom <= maxRate)
+    .filter(({ c }) => !savedOnly || saved[c.id])
+    .filter(({ c }) => !availableOnly || c.availability === "Available now")
+    .sort((a, b) => {
+      switch (sort) {
+        case "followers": return totalFollowers(b.c) - totalFollowers(a.c);
+        case "engagement": return b.c.engagement - a.c.engagement;
+        case "rating": return b.c.rating - a.c.rating || b.c.reviews - a.c.reviews;
+        case "priceLow": return a.c.rateFrom - b.c.rateFrom;
+        case "priceHigh": return b.c.rateFrom - a.c.rateFrom;
+        default: return b.score - a.score;
+      }
+    });
+  const filtersOn = !!(q || niche || city || language || platform || maxRate || savedOnly || availableOnly);
+  const reset = () => { setQ(""); setNiche(""); setCity(""); setLanguage(""); setPlatform(""); setMaxRate(0); setSavedOnly(false); setAvailableOnly(false); };
+  const toggleSave = (c: SeedCreator) => setListed(user.uid, "shortlist", c.id, !saved[c.id]);
+  const toggleInvite = (c: SeedCreator) => setListed(user.uid, "invites", c.id, !invited[c.id]);
+  const brand = (profile.client?.brand as string) || "your brand";
+
+  return <>
+    <Topbar title="Discover creators" subtitle="Verified Indian creators, matched to your brand." />
+    <div className="page-content">
+      <div className="market-tools">
+        <div className="search-box"><Icon name="search" /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by name, city, niche or language…" aria-label="Search creators" /></div>
+        <label className="mk-select"><span className="sr-only">Sort</span>
+          <select value={sort} onChange={(e) => setSort(e.target.value as CreatorSort)}>
+            <option value="match">Best match</option><option value="followers">Most followers</option><option value="engagement">Highest engagement</option>
+            <option value="rating">Top rated</option><option value="priceLow">Price: low to high</option><option value="priceHigh">Price: high to low</option>
+          </select>
+        </label>
+      </div>
+      <div className="mk-filters">
+        <select value={niche} onChange={(e) => setNiche(e.target.value)} aria-label="Niche"><option value="">All niches</option>{uniq(CREATORS.flatMap((c) => c.niches)).map((n) => <option key={n}>{n}</option>)}</select>
+        <select value={city} onChange={(e) => setCity(e.target.value)} aria-label="City"><option value="">All cities</option>{uniq(CREATORS.map((c) => c.city)).map((n) => <option key={n}>{n}</option>)}</select>
+        <select value={language} onChange={(e) => setLanguage(e.target.value)} aria-label="Language"><option value="">All languages</option>{uniq(CREATORS.flatMap((c) => c.languages)).map((n) => <option key={n}>{n}</option>)}</select>
+        <select value={platform} onChange={(e) => setPlatform(e.target.value)} aria-label="Platform"><option value="">All platforms</option>{uniq(CREATORS.flatMap((c) => c.platforms.map((p) => p.name))).map((n) => <option key={n}>{n}</option>)}</select>
+        <select value={maxRate} onChange={(e) => setMaxRate(Number(e.target.value))} aria-label="Budget"><option value={0}>Any budget</option>{[15_000, 30_000, 60_000, 1_00_000, 2_00_000].map((n) => <option key={n} value={n}>Starts under {formatINRShort(n)}</option>)}</select>
+        <button className={`mk-chip${availableOnly ? " on" : ""}`} aria-pressed={availableOnly} onClick={() => setAvailableOnly((v) => !v)}>Available now</button>
+        <button className={`mk-chip${savedOnly ? " on" : ""}`} aria-pressed={savedOnly} onClick={() => setSavedOnly((v) => !v)}><Icon name="star" size={13} /> Saved ({Object.keys(saved).length})</button>
+        {filtersOn && <button className="text-button" onClick={reset}>Clear all</button>}
+      </div>
+      <div className="market-summary"><div><Icon name="spark" /><span>Matched to</span><b>{brand}</b></div><p><strong>{list.length}</strong> of {CREATORS.length} creators · {Object.keys(invited).length} invited</p></div>
+      {list.length ? (
+        <div className="creator-grid">{list.map(({ c, score }) => (
+          <article className="creator-card" key={c.id}>
+            <button className="creator-photo mk-photo-btn" onClick={() => setOpen(c)} aria-label={`View ${c.name}'s profile`}>
+              <img src={creatorAvatar(c)} alt="" loading="lazy" />
+              <span className="match"><Icon name="spark" size={12} />{score}% match</span>
+              <span className={`mk-avail${c.availability === "Available now" ? " now" : ""}`}>{c.availability}</span>
+            </button>
+            <button className={`save${saved[c.id] ? " on" : ""}`} onClick={() => toggleSave(c)} aria-pressed={!!saved[c.id]} aria-label={saved[c.id] ? `Remove ${c.name} from saved` : `Save ${c.name}`}><Icon name="star" size={16} /></button>
+            <div className="creator-info">
+              <div className="creator-name"><div><h3>{c.name}{c.verified && <span title="Verified">✓</span>}</h3><p>{c.title} · {c.city}</p></div></div>
+              <p className="mk-rate"><b>{rateRange(c)}</b> / project</p>
+              <div className="tag-row">{c.niches.slice(0, 3).map((t) => <span key={t}>{t}</span>)}</div>
+              <div className="creator-stats"><span><b>{formatCount(totalFollowers(c))}</b> reach</span><span><b>{c.engagement}%</b> engagement</span><span><b>{c.rating}★</b> rating</span></div>
+              <div className="mk-card-actions">
+                <Button kind="light" onClick={() => setOpen(c)}>View profile</Button>
+                <Button kind={invited[c.id] ? "light" : "dark"} onClick={() => toggleInvite(c)}>{invited[c.id] ? <><Icon name="check" /> Invited</> : <>Invite <Icon name="send" size={15} /></>}</Button>
+              </div>
+            </div>
+          </article>
+        ))}</div>
+      ) : (
+        <div className="mk-empty"><Icon name="search" size={26} /><b>No creators match these filters</b><p>Try removing a filter or searching a different city or niche.</p><Button kind="light" onClick={reset}>Clear filters</Button></div>
+      )}
+    </div>
+    {open && <CreatorDrawer c={open} score={matchScore(open, want)} reasons={matchReasons(open, want)} saved={!!saved[open.id]} invited={!!invited[open.id]} onSave={() => toggleSave(open)} onInvite={() => toggleInvite(open)} onClose={() => setOpen(null)} />}
+  </>;
+}
+
+function CreatorDrawer({ c, score, reasons, saved, invited, onSave, onInvite, onClose }: { c: SeedCreator; score: number; reasons: string[]; saved: boolean; invited: boolean; onSave: () => void; onInvite: () => void; onClose: () => void }) {
+  return (
+    <Drawer label={`${c.name} profile`} onClose={onClose}>
+      <header className="mk-person">
+        <img src={creatorAvatar(c)} alt="" />
+        <div>
+          <h2>{c.name}{c.verified && <span className="mk-verified" title="Verified creator">✓</span>}</h2>
+          <p>{c.handle} · {c.title}</p>
+          <p className="mk-muted">{c.city}, {c.state} · On Kreota since {new Date(`${c.joined}-01`).toLocaleDateString("en-IN", { month: "short", year: "numeric" })}</p>
+          <div className="me-chips"><span className="me-chip creator">{c.category}</span><span className={`me-chip ${c.availability === "Available now" ? "ok" : "warn"}`}>{c.availability}</span></div>
+        </div>
+      </header>
+      <div className="mk-actions">
+        <Button kind={invited ? "light" : "dark"} onClick={onInvite}>{invited ? <><Icon name="check" /> Invited to project</> : <>Invite to project <Icon name="send" size={15} /></>}</Button>
+        <Button kind="light" onClick={onSave}><Icon name="star" size={15} /> {saved ? "Saved" : "Save"}</Button>
+      </div>
+      <section className="mk-section mk-match">
+        <h3><Icon name="spark" size={15} /> {score}% match — why</h3>
+        <ul>{reasons.map((r) => <li key={r}>{r}</li>)}</ul>
+      </section>
+      <section className="mk-section"><h3>About</h3><p>{c.bio}</p></section>
+      <section className="mk-section">
+        <h3>Audience & performance</h3>
+        <dl className="mk-stats">
+          {c.platforms.map((p) => <div key={p.name}><dt>{p.name}</dt><dd>{formatCount(p.followers)} followers</dd></div>)}
+          <div><dt>Avg. views</dt><dd>{formatCount(c.avgViews)}</dd></div>
+          <div><dt>Engagement</dt><dd>{c.engagement}%</dd></div>
+          <div><dt>Rating</dt><dd>{c.rating}★ · {c.reviews} reviews</dd></div>
+          <div><dt>Projects done</dt><dd>{c.projects}</dd></div>
+        </dl>
+      </section>
+      <section className="mk-section">
+        <h3>Rates & delivery</h3>
+        <dl className="mk-stats">
+          <div><dt>Typical project</dt><dd>{formatINR(c.rateFrom)} – {formatINR(c.rateTo)}</dd></div>
+          <div><dt>Turnaround</dt><dd>{c.turnaroundDays} days</dd></div>
+          <div><dt>Languages</dt><dd>{c.languages.join(", ")}</dd></div>
+          <div><dt>Niches</dt><dd>{c.niches.join(", ")}</dd></div>
+        </dl>
+      </section>
+      <section className="mk-section">
+        <h3>Recent work</h3>
+        <div className="mk-portfolio">{c.portfolio.map((w, i) => (
+          <article key={i} className={`mk-work t${i}`}>
+            <span>{w.brand}</span>
+            <b>{w.title}</b>
+            <em>{w.result}</em>
+          </article>
+        ))}</div>
+      </section>
+    </Drawer>
+  );
+}
+
+/* ---------- Opportunities (creator) ---------- */
+
+type BriefSort = "match" | "newest" | "budget" | "deadline";
+
+function Opportunities() {
+  const { user, profile } = useAccount();
+  const interested = profile.interested ?? {};
+  const [q, setQ] = useState("");
+  const [industry, setIndustry] = useState("");
+  const [platform, setPlatform] = useState("");
+  const [minBudget, setMinBudget] = useState(0);
+  const [sort, setSort] = useState<BriefSort>("match");
+  const [mineOnly, setMineOnly] = useState(false);
+  const [open, setOpen] = useState<SeedClient | null>(null);
+
+  const needle = q.trim().toLowerCase();
+  const list = CLIENTS.map((b) => ({ b, score: briefScore(b, profile) }))
+    .filter(({ b }) => !needle || `${b.brand} ${b.brief.title} ${b.brief.summary} ${b.city} ${b.industry} ${b.brief.niches.join(" ")}`.toLowerCase().includes(needle))
+    .filter(({ b }) => !industry || b.industry === industry)
+    .filter(({ b }) => !platform || b.brief.platforms.includes(platform))
+    .filter(({ b }) => !minBudget || b.brief.budget[1] >= minBudget)
+    .filter(({ b }) => !mineOnly || interested[b.id])
+    .sort((x, y) => sort === "newest" ? x.b.brief.postedDaysAgo - y.b.brief.postedDaysAgo
+      : sort === "budget" ? y.b.brief.budget[1] - x.b.brief.budget[1]
+      : sort === "deadline" ? x.b.brief.deadlineDays - y.b.brief.deadlineDays
+      : y.score - x.score);
+  const filtersOn = !!(q || industry || platform || minBudget || mineOnly);
+  const reset = () => { setQ(""); setIndustry(""); setPlatform(""); setMinBudget(0); setMineOnly(false); };
+  const toggle = (b: SeedClient) => setListed(user.uid, "interested", b.id, !interested[b.id]);
+
+  return <>
+    <Topbar title="Opportunities" subtitle="Live briefs from verified Indian brands." />
+    <div className="page-content">
+      <div className="market-tools">
+        <div className="search-box"><Icon name="search" /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search brands, briefs, cities or niches…" aria-label="Search opportunities" /></div>
+        <label className="mk-select"><span className="sr-only">Sort</span>
+          <select value={sort} onChange={(e) => setSort(e.target.value as BriefSort)}>
+            <option value="match">Best match</option><option value="newest">Newest</option><option value="budget">Highest budget</option><option value="deadline">Soonest deadline</option>
+          </select>
+        </label>
+      </div>
+      <div className="mk-filters">
+        <select value={industry} onChange={(e) => setIndustry(e.target.value)} aria-label="Industry"><option value="">All industries</option>{uniq(CLIENTS.map((b) => b.industry)).map((n) => <option key={n}>{n}</option>)}</select>
+        <select value={platform} onChange={(e) => setPlatform(e.target.value)} aria-label="Platform"><option value="">All platforms</option>{uniq(CLIENTS.flatMap((b) => b.brief.platforms)).map((n) => <option key={n}>{n}</option>)}</select>
+        <select value={minBudget} onChange={(e) => setMinBudget(Number(e.target.value))} aria-label="Budget"><option value={0}>Any budget</option>{[25_000, 50_000, 1_00_000, 2_00_000].map((n) => <option key={n} value={n}>Up to {formatINRShort(n)}+</option>)}</select>
+        <button className={`mk-chip${mineOnly ? " on" : ""}`} aria-pressed={mineOnly} onClick={() => setMineOnly((v) => !v)}><Icon name="star" size={13} /> Interested ({Object.keys(interested).length})</button>
+        {filtersOn && <button className="text-button" onClick={reset}>Clear all</button>}
+      </div>
+      <p className="mk-count">{list.length} of {CLIENTS.length} briefs</p>
+      {list.length ? (
+        <div className="opportunity-list">{list.map(({ b, score }) => (
+          <article className="opportunity" key={b.id}>
+            <div className="op-match"><Icon name="spark" /><b>{score}%</b><span>MATCH</span></div>
+            <div className="op-main">
+              <div className="op-brand"><BrandMark client={b} size={34} /><span>{b.brand}<small>{b.verified ? "Verified brand · " : ""}{b.city} · {b.industry}</small></span></div>
+              <h2>{b.brief.title}</h2>
+              <p>{b.brief.summary}</p>
+              <div className="tag-row">{[...b.brief.platforms, ...b.brief.niches.slice(0, 2)].map((t) => <span key={t}>{t}</span>)}<span>{b.brief.deliverables.length} deliverables</span></div>
+            </div>
+            <div className="op-side">
+              <span>BUDGET</span><b>{briefBudget(b)}</b>
+              <span>DELIVERY</span><b>{b.brief.deadlineDays} days</b>
+              <small className="mk-muted">{postedLabel(b.brief.postedDaysAgo)}</small>
+              <Button kind="dark" onClick={() => setOpen(b)}>View brief <Icon name="arrow" size={14} /></Button>
+              <Button kind="light" onClick={() => toggle(b)}>{interested[b.id] ? <><Icon name="check" /> Interested</> : "I'm interested"}</Button>
+            </div>
+          </article>
+        ))}</div>
+      ) : (
+        <div className="mk-empty"><Icon name="search" size={26} /><b>No briefs match</b><p>Try a different search or remove a filter.</p><Button kind="light" onClick={reset}>Clear filters</Button></div>
+      )}
+    </div>
+    {open && <BriefDrawer b={open} score={briefScore(open, profile)} interested={!!interested[open.id]} onToggle={() => toggle(open)} onClose={() => setOpen(null)} />}
+  </>;
+}
+
+function BriefDrawer({ b, score, interested, onToggle, onClose }: { b: SeedClient; score: number; interested: boolean; onToggle: () => void; onClose: () => void }) {
+  return (
+    <Drawer label={`${b.brand} brief`} onClose={onClose}>
+      <header className="mk-person">
+        <BrandMark client={b} size={72} />
+        <div>
+          <h2>{b.brand}{b.verified && <span className="mk-verified" title="Verified brand">✓</span>}</h2>
+          <p>{b.tagline}</p>
+          <p className="mk-muted">{b.industry} · {b.city}, {b.state} · Since {b.founded}</p>
+          <div className="me-chips"><span className="me-chip client">{b.rating}★ from creators</span><span className="me-chip">{b.campaigns} campaigns on Kreota</span></div>
+        </div>
+      </header>
+      <div className="mk-actions">
+        <Button kind={interested ? "light" : "dark"} onClick={onToggle}>{interested ? <><Icon name="check" /> You're interested</> : <>I'm interested <Icon name="send" size={15} /></>}</Button>
+        <span className="mk-match-pill"><Icon name="spark" size={13} /> {score}% match</span>
+      </div>
+      <section className="mk-section mk-brief">
+        <span className="mk-kicker">OPEN BRIEF · {postedLabel(b.brief.postedDaysAgo).toUpperCase()}</span>
+        <h3 className="mk-brief-title">{b.brief.title}</h3>
+        <p>{b.brief.summary}</p>
+        <dl className="mk-stats">
+          <div><dt>Budget</dt><dd>{formatINR(b.brief.budget[0])} – {formatINR(b.brief.budget[1])}</dd></div>
+          <div><dt>Delivery</dt><dd>Within {b.brief.deadlineDays} days</dd></div>
+          <div><dt>Creators needed</dt><dd>{b.brief.creatorsNeeded}</dd></div>
+          <div><dt>Platforms</dt><dd>{b.brief.platforms.join(", ")}</dd></div>
+        </dl>
+        <h4>Deliverables</h4>
+        <ul className="mk-list">{b.brief.deliverables.map((d) => <li key={d}><Icon name="check" size={14} /> {d}</li>)}</ul>
+        <h4>Looking for</h4>
+        <div className="tag-row">{b.brief.niches.map((n) => <span key={n}>{n}</span>)}{b.languages.map((l) => <span key={l}>{l}</span>)}</div>
+      </section>
+      <section className="mk-section">
+        <h3>About {b.brand}</h3>
+        <p>{b.description}</p>
+        <dl className="mk-stats">
+          <div><dt>Audience</dt><dd>{b.audience}</dd></div>
+          <div><dt>Brand tone</dt><dd>{b.tone}</dd></div>
+          <div><dt>Main goal</dt><dd>{b.goal}</dd></div>
+          <div><dt>Monthly content budget</dt><dd>{formatINRShort(b.budgetMonthly[0])} – {formatINRShort(b.budgetMonthly[1])}</dd></div>
+          <div><dt>Team size</dt><dd>{b.size}</dd></div>
+          <div><dt>Contact</dt><dd>{b.contact.name}, {b.contact.title}</dd></div>
+        </dl>
+      </section>
+    </Drawer>
+  );
+}
+
+function topMatches(profile: Profile, n: number) {
+  const want = clientWant(profile);
+  return CREATORS.map((c) => ({ c, score: matchScore(c, want) })).sort((a, b) => b.score - a.score).slice(0, n);
+}
+
 function DashboardOverview({ goCreators }: { goCreators: () => void }) {
+  const { profile } = useAccount();
   return <>
     <div className="section-title"><div><h2>Your creative workspace</h2><p>Everything moving forward, at a glance.</p></div><button className="text-button">View all activity <Icon name="arrow" size={15} /></button></div>
     <div className="metric-grid">
@@ -376,8 +737,8 @@ function DashboardOverview({ goCreators }: { goCreators: () => void }) {
       <div className="metric-card dark"><span>CAMPAIGN REACH</span><b>2.4M</b><p>▲ 18% from last month</p></div>
     </div>
     <div className="dashboard-grid">
-      <section className="panel project-panel"><div className="panel-head"><div><span className="status-dot" /> ACTIVE PROJECT</div><button><Icon name="more" /></button></div><h3>Summer Reset Campaign</h3><p>Launch content for Northstar’s new adaptogenic hydration line.</p><div className="progress-label"><span>Content progress</span><b>68%</b></div><div className="progress"><span style={{width:"68%"}} /></div><div className="project-meta"><span><Icon name="calendar" size={15} /> Due Jun 28</span><div className="avatar-stack small">{photos.slice(0,3).map(p=><img src={p} key={p} alt="" />)}</div></div></section>
-      <section className="panel recommendations"><div className="panel-head"><div><span>AI RECOMMENDED</span><h3>Creators for you</h3></div><button className="text-button" onClick={goCreators}>See all <Icon name="arrow" size={14}/></button></div>{creators.slice(0,3).map(c=><div className="mini-creator" key={c.name}><img src={c.photo} alt={c.name}/><div><b>{c.name}</b><span>{c.role}</span></div><strong>{c.match}%</strong></div>)}</section>
+      <section className="panel project-panel"><div className="panel-head"><div><span className="status-dot" /> ACTIVE PROJECT</div><button><Icon name="more" /></button></div><h3>Summer Reset Campaign</h3><p>Launch content for your new product line.</p><div className="progress-label"><span>Content progress</span><b>68%</b></div><div className="progress"><span style={{width:"68%"}} /></div><div className="project-meta"><span><Icon name="calendar" size={15} /> Due Jun 28</span><div className="avatar-stack small">{CREATORS.slice(3,6).map(c=><img src={creatorAvatar(c)} key={c.id} alt="" />)}</div></div></section>
+      <section className="panel recommendations"><div className="panel-head"><div><span>AI RECOMMENDED</span><h3>Creators for you</h3></div><button className="text-button" onClick={goCreators}>See all <Icon name="arrow" size={14}/></button></div>{topMatches(profile,3).map(({c,score})=><div className="mini-creator" key={c.id}><img src={creatorAvatar(c)} alt=""/><div><b>{c.name}</b><span>{c.title} · {c.city}</span></div><strong>{score}%</strong></div>)}</section>
     </div>
   </>;
 }
@@ -394,29 +755,16 @@ function StrategyReport({ goCreators }: { goCreators: () => void }) {
   </section>;
 }
 
-function CreatorMarketplace() {
-  const [invited, setInvited] = useState<string[]>([]);
-  return <>
-    <Topbar title="Discover creators" subtitle="AI-matched talent for your brand and brief." />
-    <div className="page-content">
-      <div className="market-tools"><div className="search-box"><Icon name="search"/><input placeholder="Search by name, skill or niche..." /></div><Button kind="light"><Icon name="filter"/> Filters</Button><Button kind="light">Best match ↓</Button></div>
-      <div className="market-summary"><div><Icon name="spark"/><span>Matched to</span><b>Adaptogenic hydration launch</b></div><p><strong>18</strong> high-fit creators found</p></div>
-      <div className="creator-grid">{creators.map((c,i)=><article className="creator-card" key={c.name}>
-        <div className={`creator-photo ${c.tone}`}><img src={c.photo} alt={`${c.name}, ${c.role}`}/><span className="match"><Icon name="spark" size={12}/>{c.match}% match</span><button className="save"><Icon name="star" size={16}/></button></div>
-        <div className="creator-info"><div className="creator-name"><div><h3>{c.name}<span>✓</span></h3><p>{c.role} · New York</p></div><b>{c.rate}<small> / project</small></b></div><div className="tag-row">{c.tags.map(t=><span key={t}>{t}</span>)}</div><div className="creator-stats"><span><b>{["2.8M","840k","1.2M","620k"][i]}</b> reach</span><span><b>{["6.4%","5.9%","7.1%","5.2%"][i]}</b> engagement</span><span><b>4.9</b> rating</span></div><Button kind={invited.includes(c.name) ? "light" : "dark"} className="full" onClick={()=>setInvited([...invited,c.name])}>{invited.includes(c.name) ? <><Icon name="check"/> Invite sent</> : <>Invite to project <Icon name="send" size={15}/></>}</Button></div>
-      </article>)}</div>
-    </div>
-  </>;
-}
-
 function Projects() {
+  const { profile } = useAccount();
+  const pitches = ["A 3-part reel series built around real routines, blending an honest review with tactile product moments.", "A short cinematic film for launch week plus cut-downs for Shorts and Reels in two languages.", "Regional-language explainers that show the product in everyday use, with a strong hook in the first 2 seconds."];
   return <>
     <Topbar title="Projects" subtitle="Manage briefs, proposals and content delivery." />
     <div className="page-content">
       <div className="section-title"><div className="tabs"><button className="active">Active <b>4</b></button><button>Proposals <b>7</b></button><button>Completed</button></div><Button icon="plus">New project</Button></div>
       <section className="project-hero"><div><span className="success-pill">IN PROGRESS</span><h2>Summer Reset Campaign</h2><p>Creator-led product launch · Due June 28</p></div><div className="project-score"><Icon name="spark"/><b>AI health score 92</b><span>On track</span></div></section>
       <div className="proposal-layout">
-        <section className="panel proposals"><div className="panel-head"><div><h3>Creator proposals</h3><p>AI-ranked by creative fit, approach and value.</p></div><Button kind="light"><Icon name="spark"/> Shortlist with AI</Button></div>{creators.slice(0,3).map((c,i)=><div className="proposal" key={c.name}><div className="rank">0{i+1}</div><img src={c.photo} alt={c.name}/><div className="proposal-copy"><div><h4>{c.name}<span>{c.match-i}% fit</span></h4><p>“I’ll build a 3-part routine series around the afternoon energy dip, blending authentic review with tactile product moments...”</p></div><div className="proposal-meta"><span><Icon name="clock" size={14}/> 10 day delivery</span><b>{c.rate}</b><button>Review proposal <Icon name="arrow" size={14}/></button></div></div></div>)}</section>
+        <section className="panel proposals"><div className="panel-head"><div><h3>Creator proposals</h3><p>AI-ranked by creative fit, approach and value.</p></div><Button kind="light"><Icon name="spark"/> Shortlist with AI</Button></div>{topMatches(profile,3).map(({c,score},i)=><div className="proposal" key={c.id}><div className="rank">0{i+1}</div><img src={creatorAvatar(c)} alt=""/><div className="proposal-copy"><div><h4>{c.name}<span>{score}% fit</span></h4><p>“{pitches[i]}”</p></div><div className="proposal-meta"><span><Icon name="clock" size={14}/> {c.turnaroundDays} day delivery</span><b>{formatINRShort(c.rateFrom)}</b><button>Review proposal <Icon name="arrow" size={14}/></button></div></div></div>)}</section>
         <aside className="panel timeline"><h3>Project timeline</h3>{[["Brief approved","May 26","done"],["Creator proposals","Jun 02","current"],["Creator selected","Jun 05",""],["First cut","Jun 16",""],["Final delivery","Jun 28",""]].map(([t,d,s])=><div className={`timeline-row ${s}`} key={t}><i>{s==="done"?"✓":""}</i><div><b>{t}</b><span>{d}</span></div></div>)}</aside>
       </div>
     </div>
@@ -429,36 +777,266 @@ function CreatorHome({ go }: { go: (p: CreatorPage) => void }) {
     <Topbar title={`Welcome back, ${firstName(profile)}.`} subtitle="Your creative business, in motion." />
     <div className="page-content">
       <section className="creator-welcome"><div><span className="success-pill">CREATOR PULSE</span><h2>You’re a top match for 6 new briefs.</h2><p>Your short-form wellness work is trending with verified brands this week.</p><Button kind="accent" icon="arrow" onClick={()=>go("opportunities")}>View opportunities</Button></div><div className="pulse-orbit"><div><b>94</b><span>PROFILE<br/>STRENGTH</span></div></div></section>
-      <div className="metric-grid creator-metrics"><div className="metric-card"><span>THIS MONTH</span><b>$8,420</b><p><i>+24%</i> from last month</p></div><div className="metric-card lilac"><span>ACTIVE PROJECTS</span><b>03</b><p>1 deliverable due soon</p></div><div className="metric-card mint"><span>NEW INVITES</span><b>06</b><p>4 are high-match</p></div><div className="metric-card peach"><span>AVG. RATING</span><b>4.9</b><p>Across 38 projects</p></div></div>
+      <div className="metric-grid creator-metrics"><div className="metric-card"><span>THIS MONTH</span><b>₹1,84,500</b><p><i>+24%</i> from last month</p></div><div className="metric-card lilac"><span>ACTIVE PROJECTS</span><b>03</b><p>1 deliverable due soon</p></div><div className="metric-card mint"><span>NEW INVITES</span><b>06</b><p>4 are high-match</p></div><div className="metric-card peach"><span>AVG. RATING</span><b>4.9</b><p>Across 38 projects</p></div></div>
       <div className="dashboard-grid">
-        <section className="panel task-list"><div className="panel-head"><div><span>TODAY</span><h3>Your next moves</h3></div><button className="text-button">View calendar</button></div>{[["Upload first cut","Summer Reset Campaign","Due today","peach"],["Review new brief","Aura skincare launch","98% match","mint"],["Reply to Theo","Northstar Labs","2 new messages","lilac"]].map(([a,b,c,t])=><button className="task-row" key={a}><i className={t}><Icon name={a.includes("Upload")?"upload":a.includes("Review")?"brief":"chat"} /></i><div><b>{a}</b><span>{b}</span></div><em>{c}</em><Icon name="arrow" size={15}/></button>)}</section>
+        <section className="panel task-list"><div className="panel-head"><div><span>TODAY</span><h3>Your next moves</h3></div><button className="text-button">View calendar</button></div>{[["Upload first cut",`${CLIENTS[0].brief.title} · ${CLIENTS[0].brand}`,"Due today","peach"],["Review new brief",`${CLIENTS[16].brief.title} · ${CLIENTS[16].brand}`,"New today","mint"],["Reply to "+CLIENTS[7].contact.name.split(" ")[0],CLIENTS[7].brand,"Waiting on you","lilac"]].map(([a,b,c,t])=><button className="task-row" key={a}><i className={t}><Icon name={a.includes("Upload")?"upload":a.includes("Review")?"brief":"chat"} /></i><div><b>{a}</b><span>{b}</span></div><em>{c}</em><Icon name="arrow" size={15}/></button>)}</section>
         <section className="panel"><div className="panel-head"><div><span>PERFORMANCE</span><h3>Portfolio insights</h3></div><button><Icon name="more"/></button></div><div className="chart"><div className="chart-line"><span/><span/><span/><span/><span/><span/></div><div className="chart-labels"><span>Jan</span><span>Feb</span><span>Mar</span><span>Apr</span><span>May</span><span>Jun</span></div></div><p className="chart-note"><Icon name="spark" size={15}/> Product storytelling is your fastest-growing category.</p></section>
       </div>
     </div>
   </>;
 }
 
-function Opportunities() {
+function shortTime(at?: number) {
+  if (!at) return "";
+  const d = new Date(at);
+  const now = new Date();
+  const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = (day(now) - day(d)) / 86400000;
+  if (diff === 0) return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (diff === 1) return "Yesterday";
+  if (diff < 7) return d.toLocaleDateString(undefined, { weekday: "short" });
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+
+function dayLabel(at: number) {
+  const d = new Date(at);
+  const today = new Date();
+  const y = new Date(); y.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return "Today";
+  if (d.toDateString() === y.toDateString()) return "Yesterday";
+  return d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+}
+
+function PersonAvatar({ entry, size = 40 }: { entry?: Contact; size?: number }) {
+  const name = entry?.name ?? "Kreota member";
+  const tone = entry?.roles.includes("creator") && !entry.roles.includes("client") ? "creator" : "client";
+  return entry?.photoURL
+    ? <img className="msg-avatar" style={{ width: size, height: size }} src={entry.photoURL} alt="" referrerPolicy="no-referrer" />
+    : <span className={`msg-avatar ${tone}`} style={{ width: size, height: size }}>{initials(name)}</span>;
+}
+
+const roleText = (e?: Contact) => (e ? (e.demo ? (e.roles.includes("creator") ? "Demo creator" : "Demo brand") : e.roles.map((r) => (r === "creator" ? "Creator" : "Client")).join(" · ")) : "");
+
+function Messages() {
+  const { user } = useAccount();
+  const me = user.uid;
+  const realInbox = useInbox(me);
+  const demoInbox = useDemoInbox(me);
+  const directory = useDirectory();
+  const people = new Map<string, Contact>([...DEMO_CONTACTS, ...directory.data].map((d) => [d.uid, d]));
+  const inbox = {
+    loading: realInbox.loading && demoInbox.loading,
+    error: realInbox.error,
+    data: [...realInbox.data, ...demoInbox.data].sort((a, b) => (b.lastAt ?? b.updatedAt ?? 0) - (a.lastAt ?? a.updatedAt ?? 0)),
+  };
+  const [active, setActive] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
+  const [search, setSearch] = useState("");
+  const [error, setError] = useState("");
+
+  const rows = inbox.data.filter((r) => {
+    if (!search.trim()) return true;
+    const p = people.get(r.with);
+    return `${p?.name ?? ""} ${p?.headline ?? ""} ${r.lastText ?? ""}`.toLowerCase().includes(search.trim().toLowerCase());
+  });
+  const activeRow = inbox.data.find((r) => r.cid === active);
+
+  const startWith = async (other: string) => {
+    setError("");
+    try {
+      const cid = isDemoId(other)
+        ? await openDemoConversation(me, other)
+        : await openConversation(me, other, realInbox.data.some((r) => r.cid === conversationId(me, other)));
+      setActive(cid);
+      setPicking(false);
+    } catch (e) {
+      setError(describeError(e));
+    }
+  };
+
+  const blocked = inbox.error === "permission" || directory.error === "permission";
+
   return <>
-    <Topbar title="Opportunities" subtitle="Briefs selected for your skills, style and audience." />
-    <div className="page-content"><div className="market-tools"><div className="search-box"><Icon name="search"/><input placeholder="Search opportunities..." /></div><Button kind="light"><Icon name="filter"/> Filter</Button></div>
-      <div className="opportunity-list">{[
-        ["98","Northstar Labs","Summer Reset","Create a 3-part vertical video series for a new adaptogenic hydration line.","Wellness · UGC · 3 videos","$1,800 – $2,400","7 days"],
-        ["95","Morrow Skin","Barrier, but better","Translate clinical skincare benefits into a warm, everyday creator story.","Beauty · Reels · 2 videos","$1,400 – $2,000","12 days"],
-        ["91","Sunday Supply","Everyday objects","Lifestyle stills and one short film for a design-led homeware launch.","Lifestyle · Photo + video","$2,200 – $3,000","14 days"]
-      ].map((o,i)=><article className="opportunity" key={o[2]}><div className="op-match"><Icon name="spark"/><b>{o[0]}%</b><span>MATCH</span></div><div className="op-main"><div className="op-brand"><div>{o[1].slice(0,1)}</div><span>{o[1]}<small>Verified brand</small></span></div><h2>{o[2]}</h2><p>{o[3]}</p><div className="tag-row"><span>{o[4]}</span></div></div><div className="op-side"><span>BUDGET</span><b>{o[5]}</b><span>DELIVERY</span><b>{o[6]}</b><Button kind={i===0?"dark":"light"}>View brief <Icon name="arrow" size={14}/></Button></div></article>)}</div>
+    <Topbar title="Messages" subtitle="Talk directly with clients and creators on Kreota." />
+    <div className={`msg-layout${active || picking ? " has-active" : ""}`}>
+      <aside className="msg-list" aria-label="Conversations">
+        <div className="msg-list-head">
+          <div className="search-box"><Icon name="search" /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search conversations" aria-label="Search conversations" /></div>
+          <button className="button dark sm" onClick={() => { setPicking(true); setActive(null); }}><Icon name="plus" size={15} /> New</button>
+        </div>
+        {inbox.loading ? (
+          <div className="msg-loading"><span className="splash-spinner" /></div>
+        ) : rows.length ? (
+          <div className="msg-rows">
+            {rows.map((r) => {
+              const p = people.get(r.with);
+              return (
+                <button key={r.cid} className={`msg-row${active === r.cid ? " active" : ""}${r.unread ? " unread" : ""}`} onClick={() => { setActive(r.cid); setPicking(false); }}>
+                  <PersonAvatar entry={p} />
+                  <div className="msg-row-text">
+                    <b>{p?.name ?? "Kreota member"}</b>
+                    <span>{r.lastText ? `${r.lastSender === me ? "You: " : ""}${r.lastText}` : "No messages yet — say hello"}</span>
+                  </div>
+                  <div className="msg-row-meta">
+                    <time>{shortTime(r.lastAt ?? r.updatedAt)}</time>
+                    {!!r.unread && <i aria-label={`${r.unread} unread`}>{r.unread > 99 ? "99+" : r.unread}</i>}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="msg-empty">
+            <Icon name="chat" size={26} />
+            <b>{search ? "No matches" : "No conversations yet"}</b>
+            <p>{search ? "Try a different name." : "Start a conversation with a creator or brand on Kreota."}</p>
+            {!search && <button className="button dark sm" onClick={() => setPicking(true)}><Icon name="plus" size={15} /> New message</button>}
+          </div>
+        )}
+      </aside>
+
+      <section className="msg-main">
+        {blocked ? (
+          <div className="msg-empty"><Icon name="chat" size={26} /><b>Messaging is waiting for database rules</b><p>The Realtime Database rules need the messaging section before conversations can load.</p></div>
+        ) : picking ? (
+          <PeoplePicker people={[...directory.data.filter((d) => d.uid !== me), ...DEMO_CONTACTS]} loading={directory.loading} onPick={startWith} onBack={() => setPicking(false)} error={error} />
+        ) : active ? (
+          <Chat key={active} cid={active} other={people.get(activeRow?.with ?? "")} otherId={activeRow?.with ?? ""} unread={activeRow?.unread ?? 0} onBack={() => setActive(null)} />
+        ) : (
+          <div className="msg-empty"><Icon name="chat" size={30} /><b>Your conversations</b><p>Pick a conversation, or start a new one.</p></div>
+        )}
+      </section>
     </div>
   </>;
 }
 
-function Messages() {
-  const [messages,setMessages]=useState(["Hi Maya — the team loved your direction. The natural morning light feels exactly right.","Amazing. I’ll preserve that tone and share the first cut by Thursday."]);
-  const [draft,setDraft]=useState("");
-  const send=()=>{if(draft.trim()){setMessages([...messages,draft]);setDraft("");}};
-  return <><Topbar title="Messages" subtitle="Keep every creative conversation in context."/><div className="messages-layout">
-    <aside className="conversation-list"><div className="search-box"><Icon name="search"/><input placeholder="Search conversations"/></div>{creators.slice(0,3).map((c,i)=><button className={i===0?"active":""} key={c.name}><img src={c.photo} alt=""/><div><b>{i===0?"Northstar Labs":c.name}</b><span>{i===0?"The team loved your direction...":"Shared a project update"}</span></div><time>{i===0?"2m":"1d"}</time></button>)}</aside>
-    <section className="chat-window"><header><div className="chat-person"><div className="user-avatar client">N</div><div><b>Northstar Labs</b><span><i/> Active now</span></div></div><div><button className="icon-btn"><Icon name="video"/></button><button className="icon-btn"><Icon name="more"/></button></div></header><div className="project-context"><Icon name="brief"/><div><span>PROJECT</span><b>Summer Reset Campaign</b></div><em>In progress</em></div><div className="chat-body"><div className="date-line">TODAY</div>{messages.map((m,i)=><div className={`bubble ${i%2?"mine":""}`} key={i}>{m}<time>{i%2?"10:34 AM":"10:28 AM"}</time></div>)}</div><div className="chat-input"><button><Icon name="plus"/></button><input value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&send()} placeholder="Write a message..."/><button className="send-btn" onClick={send}><Icon name="send" size={17}/></button></div></section>
-  </div></>;
+function PeoplePicker({ people, loading, onPick, onBack, error }: { people: Contact[]; loading: boolean; onPick: (uid: string) => void; onBack: () => void; error: string }) {
+  const [q, setQ] = useState("");
+  const [filter, setFilter] = useState<"all" | Role>("all");
+  const [busy, setBusy] = useState<string | null>(null);
+  const list = people
+    .filter((p) => filter === "all" || p.roles.includes(filter))
+    .filter((p) => `${p.name} ${p.headline}`.toLowerCase().includes(q.trim().toLowerCase()))
+    .sort((a, b) => Number(!!a.demo) - Number(!!b.demo) || a.name.localeCompare(b.name));
+  return (
+    <div className="msg-picker">
+      <header className="msg-chat-head">
+        <button className="icon-btn msg-back" onClick={onBack} aria-label="Back to conversations"><Icon name="arrow" /></button>
+        <div><b>New message</b><span>Choose who to talk to</span></div>
+      </header>
+      <div className="msg-picker-tools">
+        <div className="search-box"><Icon name="search" /><input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search people and brands" aria-label="Search people" /></div>
+        <div className="msg-tabs" role="tablist">
+          {([["all", "Everyone"], ["creator", "Creators"], ["client", "Clients"]] as const).map(([id, label]) => (
+            <button key={id} role="tab" aria-selected={filter === id} className={filter === id ? "on" : ""} onClick={() => setFilter(id)}>{label}</button>
+          ))}
+        </div>
+      </div>
+      {error && <div className="auth-alert error" role="alert">{error}</div>}
+      <div className="msg-people">
+        {loading ? <div className="msg-loading"><span className="splash-spinner" /></div>
+          : list.length ? list.map((p) => (
+            <button key={p.uid} className="msg-person" disabled={!!busy} onClick={() => { setBusy(p.uid); Promise.resolve(onPick(p.uid)).finally(() => setBusy(null)); }}>
+              <PersonAvatar entry={p} size={44} />
+              <div><b>{p.name}{p.demo && <em className="msg-demo-tag">Demo</em>}</b><span>{p.headline || roleText(p) || "Kreota member"}</span></div>
+              <small>{busy === p.uid ? "Opening…" : roleText(p)}</small>
+            </button>
+          ))
+          : <div className="msg-empty small"><b>No one found</b><p>{people.length ? "Try another search or tab." : "Nobody else has joined Kreota yet. Invite a creator or brand to sign up."}</p></div>}
+      </div>
+    </div>
+  );
+}
+
+function Chat({ cid, other, otherId, unread, onBack }: { cid: string; other?: Contact; otherId: string; unread: number; onBack: () => void }) {
+  const { user, profile } = useAccount();
+  const me = user.uid;
+  const demoId = demoIdOf(cid);
+  const real = useMessages(demoId ? null : cid);
+  const demo = useDemoMessages(demoId ? me : null, demoId);
+  const msgs = demoId ? demo : real;
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const listRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Opening a conversation (or receiving while it's open) clears its unread count.
+  useEffect(() => {
+    if (unread > 0 && document.visibilityState === "visible") (demoId ? markDemoRead(me, demoId) : markRead(me, cid)).catch(() => {});
+  }, [unread, me, cid, demoId, msgs.data.length]);
+
+  useEffect(() => {
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [msgs.data.length, cid]);
+
+  useEffect(() => { inputRef.current?.focus(); }, [cid]);
+
+  const send = async () => {
+    const text = draft.trim();
+    if (!text || sending || !otherId) return;
+    setSending(true);
+    setError("");
+    setDraft("");
+    try {
+      if (demoId) await sendDemoMessage(me, demoId, text, profile.name, msgs.data.filter((m) => m.senderId === me).length);
+      else await sendMessage(cid, me, otherId, text);
+    } catch (e) {
+      setDraft(text);
+      setError(describeError(e));
+    } finally {
+      setSending(false);
+      inputRef.current?.focus();
+    }
+  };
+
+  let lastDay = "";
+  return (
+    <div className="msg-chat">
+      <header className="msg-chat-head">
+        <button className="icon-btn msg-back" onClick={onBack} aria-label="Back to conversations"><Icon name="arrow" /></button>
+        <PersonAvatar entry={other} />
+        <div><b>{other?.name ?? "Kreota member"}</b><span>{[roleText(other), other?.headline].filter(Boolean).join(" · ") || "Kreota member"}</span></div>
+      </header>
+      {demoId && <p className="msg-demo-note">This is a demo profile, not a real account. Replies are written automatically so you can try messaging.</p>}
+      <div className="msg-thread" ref={listRef} aria-live="polite">
+        {msgs.loading ? <div className="msg-loading"><span className="splash-spinner" /></div>
+          : !msgs.data.length ? <div className="msg-empty small"><b>Start the conversation</b><p>Introduce yourself and what you'd like to create together.</p></div>
+          : msgs.data.map((m, i) => {
+            const label = m.at ? dayLabel(m.at) : "";
+            const showDay = label && label !== lastDay;
+            if (showDay) lastDay = label;
+            const mine = m.senderId === me;
+            const next = msgs.data[i + 1];
+            const tail = !next || next.senderId !== m.senderId || (next.at ?? 0) - (m.at ?? 0) > 5 * 60000;
+            return (
+              <div key={m.id} className="msg-item">
+                {showDay && <div className="msg-day"><span>{label}</span></div>}
+                <div className={`msg-bubble${mine ? " mine" : ""}${tail ? " tail" : ""}`}>
+                  <p>{m.text}</p>
+                  {tail && <time>{"auto" in m && m.auto ? "Automatic reply · " : ""}{m.at ? new Date(m.at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : ""}</time>}
+                </div>
+              </div>
+            );
+          })}
+      </div>
+      {error && <div className="auth-alert error msg-error" role="alert">{error}</div>}
+      <form className="msg-composer" onSubmit={(e) => { e.preventDefault(); send(); }}>
+        <textarea
+          ref={inputRef}
+          value={draft}
+          rows={1}
+          maxLength={4000}
+          placeholder={`Message ${other?.name?.split(" ")[0] ?? ""}…`}
+          aria-label="Message"
+          onChange={(e) => { setDraft(e.target.value); e.target.style.height = "auto"; e.target.style.height = `${Math.min(e.target.scrollHeight, 140)}px`; }}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }}
+        />
+        <button type="submit" className="msg-send" disabled={!draft.trim() || sending} aria-label="Send message"><Icon name="send" size={18} /></button>
+      </form>
+    </div>
+  );
 }
 
 function ProfilePage() {
@@ -647,6 +1225,8 @@ function AccountProblem({ message }: { message: string }) {
 
 export default function App() {
   const session = useSession();
+  const readyProfile = session.status === "signedIn" && session.profile?.role && session.profile.onboarded?.[session.profile.role] ? session.profile : null;
+  useEffect(() => { if (readyProfile) publishDirectoryEntry(readyProfile); }, [readyProfile]);
   if (session.status === "loading") return <Splash />;
   if (session.status === "signedOut") return <Auth />;
   const { user, profile, error } = session;

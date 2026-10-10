@@ -1,7 +1,7 @@
 import { initializeApp } from "firebase/app";
 import { getAnalytics, isSupported, type Analytics } from "firebase/analytics";
-import { getAuth } from "firebase/auth";
-import { getDatabase } from "firebase/database";
+import { connectAuthEmulator, getAuth } from "firebase/auth";
+import { connectDatabaseEmulator, getDatabase } from "firebase/database";
 
 // Firebase web config is public by design; access is controlled by Firebase security rules.
 const firebaseConfig = {
@@ -21,7 +21,14 @@ export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getDatabase(app);
 
+// Local testing against the Firebase emulators: VITE_FIREBASE_EMULATORS=1 pnpm dev
+if (import.meta.env.VITE_FIREBASE_EMULATORS) {
+  connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
+  connectDatabaseEmulator(db, "127.0.0.1", 9000);
+}
+
 // Analytics throws in browsers without IndexedDB/cookies (some private windows), so only start it where supported.
-export const analytics: Promise<Analytics | null> = isSupported()
+// Emulator runs are test traffic, so they never report to the real Analytics property.
+export const analytics: Promise<Analytics | null> = import.meta.env.VITE_FIREBASE_EMULATORS ? Promise.resolve(null) : isSupported()
   .then((ok) => (ok ? getAnalytics(app) : null))
   .catch(() => null);
