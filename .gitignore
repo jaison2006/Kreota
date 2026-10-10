@@ -10,4 +10,7 @@ vite.config.*.timestamp-*
 logs/
 *.log
 .tmp-*
+.env
+.venv/
+__pycache__/
 
