@@ -355,7 +355,7 @@ const QUICK_PROMPTS: [string, string][] = [
 const WS_PLATFORMS = ["Instagram", "YouTube Shorts", "YouTube", "Moj", "Josh", "ShareChat", "LinkedIn"];
 const WS_LANGUAGES = ["Hindi", "English", "Tamil", "Telugu", "Kannada", "Malayalam", "Bengali", "Marathi", "Gujarati", "Punjabi"];
 
-interface WsResult { input: StrategyInput; strategy: Strategy; engine: Engine; notice?: string; savedId?: string }
+interface WsResult { input: StrategyInput; strategy: Strategy; engine: Engine; notice?: string; savedId?: string; model?: string; appCheckToken?: string }
 
 function ClientHome({ goCreators, goProjects }: { goCreators: () => void; goProjects: () => void }) {
   const { user, profile } = useAccount();
@@ -499,10 +499,24 @@ function StrategyView({ r, onClose, onSaved, goCreators, goProjects }: { r: WsRe
 
   return (
     <section className="ws-report" aria-label="Campaign strategy">
-      {r.notice && <div className="ws-notice" role="status"><Icon name="spark" size={14} /><span>{r.notice}{r.notice.includes("isn't switched on") && <> <a href="https://console.firebase.google.com/project/kreota-83c24/ailogic/" target="_blank" rel="noopener noreferrer">Turn on Gemini →</a></>}</span></div>}
+      {r.notice && (
+        <div className="ws-notice" role="status">
+          <Icon name="spark" size={14} />
+          <div>
+            <span>{r.notice}{r.notice.includes("isn't switched on") && <> <a href="https://console.firebase.google.com/project/kreota-83c24/ailogic/" target="_blank" rel="noopener noreferrer">Turn on Gemini →</a></>}</span>
+            {r.appCheckToken && (
+              <div className="ws-token">
+                <code>{r.appCheckToken}</code>
+                <button onClick={() => navigator.clipboard?.writeText(r.appCheckToken!).then(() => setMsg("Debug token copied."))}>Copy</button>
+                <a href="https://console.firebase.google.com/project/kreota-83c24/appcheck/apps" target="_blank" rel="noopener noreferrer">Open App Check →</a>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       <header className="ws-head">
         <div>
-          <span className={`ws-badge ${r.engine}`}>{r.engine === "gemini" ? "Written by Gemini" : "Kreota planner"}</span>
+          <span className={`ws-badge ${r.engine}`}>{r.engine === "gemini" ? `Written by Gemini${r.model ? ` · ${r.model}` : ""}` : "Kreota planner"}</span>
           <h2>{s.title}</h2>
           <p>{s.summary}</p>
           <div className="op2-tags"><span className="plat">{formatINR(input.budget)}</span><span className="plat">{input.weeks} weeks</span>{input.platforms.map((p) => <span key={p}>{p}</span>)}{input.languages.map((l) => <span key={l}>{l}</span>)}</div>

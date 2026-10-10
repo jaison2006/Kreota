@@ -1,8 +1,8 @@
-import { app } from "./firebase";
+import { app, appCheckDebugToken } from "./firebase";
 import { formatINR } from "./data/india";
 
-/** Gemini model used through Firebase AI Logic. */
-export const AI_MODEL = "gemini-2.5-flash";
+/** Gemini models to try, newest first; older ones get retired for new projects, so we fall through the list. */
+export const AI_MODELS = ["gemini-3.8", "gemini-flash-latest", "gemini-2.5-flash"];
 
 export interface StrategyInput {
   prompt: string;
@@ -34,7 +34,7 @@ export interface Strategy {
 }
 
 export type Engine = "gemini" | "planner";
-export interface StrategyResult { strategy: Strategy; engine: Engine; notice?: string }
+export interface StrategyResult { strategy: Strategy; engine: Engine; notice?: string; model?: string; appCheckToken?: string }
 
 /* ---------- Gemini via Firebase AI Logic ---------- */
 
@@ -61,7 +61,7 @@ Rules:
 - Keep each text field to one or two sentences.`;
 }
 
-async function strategyFromGemini(input: StrategyInput): Promise<Strategy> {
+async function strategyFromGemini(input: StrategyInput): Promise<{ strategy: Strategy; model: string }> {
   const { getAI, getGenerativeModel, GoogleAIBackend, Schema } = await import("firebase/ai");
   const str = () => Schema.string();
   const schema = Schema.object({
@@ -82,10 +82,20 @@ async function strategyFromGemini(input: StrategyInput): Promise<Strategy> {
     },
   });
   const ai = getAI(app, { backend: new GoogleAIBackend() });
-  const model = getGenerativeModel(ai, { model: AI_MODEL, generationConfig: { responseMimeType: "application/json", responseSchema: schema, temperature: 0.8 } });
-  const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timed out")), 60_000));
-  const res = await Promise.race([model.generateContent(buildPrompt(input)), timeout]);
-  return normalise(JSON.parse(res.response.text()), input);
+  let lastError: unknown;
+  for (const name of AI_MODELS) {
+    const model = getGenerativeModel(ai, { model: name, generationConfig: { responseMimeType: "application/json", responseSchema: schema, temperature: 0.8 } });
+    const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timed out")), 60_000));
+    try {
+      const res = await Promise.race([model.generateContent(buildPrompt(input)), timeout]);
+      return { strategy: normalise(JSON.parse(res.response.text()), input), model: name };
+    } catch (e) {
+      lastError = e;
+      // A retired or unknown model: try the next one. Anything else (App Check, quota, network) won't be fixed by switching.
+      if (!/no longer available|not found|NOT_FOUND|is not supported|unknown model|\[404/i.test((e as Error).message ?? "")) throw e;
+    }
+  }
+  throw lastError;
 }
 
 /** Fills gaps and fixes totals so a slightly-off model answer still renders cleanly. */
@@ -220,10 +230,19 @@ function planStrategy(i: StrategyInput): Strategy {
 
 export async function generateStrategy(input: StrategyInput): Promise<StrategyResult> {
   try {
-    return { strategy: await strategyFromGemini(input), engine: "gemini" };
+    const { strategy, model } = await strategyFromGemini(input);
+    return { strategy, model, engine: "gemini" };
   } catch (e) {
     const code = (e as { code?: string }).code ?? "";
     const msg = (e as Error).message ?? "";
+    if (/App Check/i.test(msg)) {
+      return {
+        strategy: planStrategy(input), engine: "planner", appCheckToken: appCheckDebugToken ?? undefined,
+        notice: appCheckDebugToken
+          ? "Gemini is on, but Firebase App Check is blocking this browser. Register the debug token below in the Firebase console (App Check → Apps → ⋮ → Manage debug tokens), then generate again."
+          : "Gemini is on, but Firebase App Check is blocking requests from this site. Add a reCAPTCHA v3 site key (VITE_RECAPTCHA_SITE_KEY) registered in App Check, or turn off App Check enforcement for Firebase AI Logic.",
+      };
+    }
     const notice = code.includes("api-not-enabled") || /SERVICE_DISABLED|has not been used|not enabled/i.test(msg)
       ? "Gemini isn't switched on for this project yet, so Kreota's built-in planner wrote this. Turn on Firebase AI Logic in the Firebase console to use Gemini."
       : `Gemini couldn't answer (${msg.replace(/^.*?\]\s*/, "").slice(0, 120) || "unknown error"}), so Kreota's built-in planner wrote this instead.`;
