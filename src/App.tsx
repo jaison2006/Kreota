@@ -3,8 +3,9 @@ import type { User } from "firebase/auth";
 import Studio from "./studio/Studio";
 import {
   completeOnboarding, describeError, resendVerification, resetPassword, saveOnboardingStep, setRole, signInWithEmail,
-  signInWithGoogle, signOutUser, signUpWithEmail, useSession, type FormValues, type Profile, type Role,
+  saveProfileFields, signInWithGoogle, signOutUser, signUpWithEmail, updateDisplayName, useSession, type FormValues, type Profile, type Role,
 } from "./session";
+import { OPTIONS, ROLE_FIELDS, toLink, type FieldSection } from "./profileFields";
 
 interface Account { user: User; profile: Profile }
 const AccountContext = createContext<Account | null>(null);
@@ -24,7 +25,7 @@ function Avatar({ profile, role }: { profile: Profile; role: Role }) {
     ? <img className="user-avatar photo" src={profile.photoURL} alt="" referrerPolicy="no-referrer" />
     : <div className={`user-avatar ${role}`}>{initials(profile.name)}</div>;
 }
-type ClientPage = "home" | "creators" | "projects" | "messages";
+type ClientPage = "home" | "creators" | "projects" | "messages" | "profile";
 type CreatorPage = "home" | "opportunities" | "messages" | "studio" | "profile";
 
 const photos = [
@@ -262,21 +263,21 @@ function Onboarding({ role }: { role: Role }) {
           {error && <div className="auth-alert error" role="alert">{error}</div>}
           {step === 1 && (creator ? <>
             <div className="form-row"><label>Creator / display name<input name="displayName" required defaultValue={v("displayName", profile.name)} placeholder="e.g. Maya Creates" /></label><label>Based in<input name="location" required defaultValue={v("location")} placeholder="City, country" /></label></div>
-            <label>Primary creator category<select name="category" defaultValue={v("category", "Video & UGC")}><option>Video & UGC</option><option>Photography</option><option>Design & motion</option><option>Writing & strategy</option></select></label>
+            <label>Primary creator category<select name="category" defaultValue={v("category", OPTIONS.category[0])}>{OPTIONS.category.map((o) => <option key={o}>{o}</option>)}</select></label>
             <label>Short bio<textarea name="bio" defaultValue={v("bio")} placeholder="Tell brands what makes your work distinctive..." /></label>
             <div className="form-row"><label>Instagram / TikTok<input name="social" defaultValue={v("social")} placeholder="@yourhandle" /></label><label>Portfolio URL<input name="portfolio" defaultValue={v("portfolio")} placeholder="https://" /></label></div>
           </> : <>
             <div className="form-row"><label>Brand name<input name="brand" required defaultValue={v("brand")} placeholder="e.g. Northstar Labs" /></label><label>Company website<input name="website" required defaultValue={v("website")} placeholder="https://" /></label></div>
             <label>What does your brand do?<textarea name="description" defaultValue={v("description")} placeholder="A short description of your product and audience..." /></label>
-            <div className="form-row"><label>Industry<select name="industry" defaultValue={v("industry", "Consumer technology")}><option>Consumer technology</option><option>Beauty & wellness</option><option>Fashion</option><option>Food & beverage</option></select></label><label>Company size<select name="size" defaultValue={v("size", "1–10 people")}><option>1–10 people</option><option>11–50 people</option><option>51–200 people</option><option>200+ people</option></select></label></div>
+            <div className="form-row"><label>Industry<select name="industry" defaultValue={v("industry", OPTIONS.industry[0])}>{OPTIONS.industry.map((o) => <option key={o}>{o}</option>)}</select></label><label>Company size<select name="size" defaultValue={v("size", OPTIONS.size[0])}>{OPTIONS.size.map((o) => <option key={o}>{o}</option>)}</select></label></div>
           </>)}
           {step === 2 && (creator ? <>
             <label>Skills and specialties<input name="skills" defaultValue={v("skills")} placeholder="UGC, direction, editing, beauty..." /></label>
-            <div className="form-row"><label>Typical project rate<select name="rate" defaultValue={v("rate", "$1,000 – $2,500")}><option>$1,000 – $2,500</option><option>$500 – $1,000</option><option>$2,500 – $5,000</option></select></label><label>Weekly availability<select name="availability" defaultValue={v("availability", "20+ hours")}><option>20+ hours</option><option>10–20 hours</option><option>Under 10 hours</option></select></label></div>
+            <div className="form-row"><label>Typical project rate<select name="rate" defaultValue={v("rate", OPTIONS.rate[0])}>{OPTIONS.rate.map((o) => <option key={o}>{o}</option>)}</select></label><label>Weekly availability<select name="availability" defaultValue={v("availability", OPTIONS.availability[0])}>{OPTIONS.availability.map((o) => <option key={o}>{o}</option>)}</select></label></div>
             <label>Upload a recent project<div className="dropzone"><Icon name="upload" /><b>Drop files or browse</b><span>MP4, MOV, PNG up to 500MB</span></div></label>
           </> : <>
-            <label>Main content goal<select name="goal" defaultValue={v("goal", "Launch a new product")}><option>Launch a new product</option><option>Build brand awareness</option><option>Drive conversions</option><option>Always-on social content</option></select></label>
-            <div className="form-row"><label>Monthly content budget<select name="budget" defaultValue={v("budget", "$5k – $15k")}><option>$5k – $15k</option><option>Under $5k</option><option>$15k – $50k</option><option>$50k+</option></select></label><label>Primary channels<select name="channels" defaultValue={v("channels", "TikTok & Instagram")}><option>TikTok & Instagram</option><option>YouTube</option><option>Paid social</option><option>Multi-channel</option></select></label></div>
+            <label>Main content goal<select name="goal" defaultValue={v("goal", OPTIONS.goal[0])}>{OPTIONS.goal.map((o) => <option key={o}>{o}</option>)}</select></label>
+            <div className="form-row"><label>Monthly content budget<select name="budget" defaultValue={v("budget", OPTIONS.budget[0])}>{OPTIONS.budget.map((o) => <option key={o}>{o}</option>)}</select></label><label>Primary channels<select name="channels" defaultValue={v("channels", OPTIONS.channels[0])}>{OPTIONS.channels.map((o) => <option key={o}>{o}</option>)}</select></label></div>
             <label>Brand tone<input name="tone" defaultValue={v("tone")} placeholder="e.g. optimistic, intelligent, candid" /></label>
           </>)}
           {step === 3 && <>
@@ -301,7 +302,7 @@ function Onboarding({ role }: { role: Role }) {
 
 function Sidebar({ role, page, onPage, onSwitch }: { role: Role; page: string; onPage: (p: any) => void; onSwitch: () => void }) {
   const { profile } = useAccount();
-  const clientNav = [["home","home","AI workspace"],["creators","users","Discover creators"],["projects","brief","Projects"],["messages","chat","Messages"]];
+  const clientNav = [["home","home","AI workspace"],["creators","users","Discover creators"],["projects","brief","Projects"],["messages","chat","Messages"],["profile","users","My profile"]];
   const creatorNav = [["home","home","Overview"],["opportunities","brief","Opportunities"],["messages","chat","Messages"],["studio","spark","Kreota Studio"],["profile","users","My profile"]];
   const nav = role === "client" ? clientNav : creatorNav;
   return <aside className="sidebar">
@@ -314,11 +315,11 @@ function Sidebar({ role, page, onPage, onSwitch }: { role: Role; page: string; o
   </aside>;
 }
 
-const ShellContext = createContext<{ role: Role; onSwitch: () => void }>({ role: "client", onSwitch: () => {} });
+const ShellContext = createContext<{ role: Role; onSwitch: () => void; openProfile: () => void }>({ role: "client", onSwitch: () => {}, openProfile: () => {} });
 
 function AccountMenu() {
   const { profile, user } = useAccount();
-  const { role, onSwitch } = useContext(ShellContext);
+  const { role, onSwitch, openProfile } = useContext(ShellContext);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -335,7 +336,8 @@ function AccountMenu() {
       {open && (
         <div className="account-pop" role="menu">
           <div className="account-who"><b>{profile.name}</b><span>{user.email}</span></div>
-          <button role="menuitem" onClick={() => { setOpen(false); onSwitch(); }}><Icon name="users" size={16} /> Switch to {role === "client" ? "creator" : "client"} workspace</button>
+          <button role="menuitem" onClick={() => { setOpen(false); openProfile(); }}><Icon name="users" size={16} /> My profile</button>
+          <button role="menuitem" onClick={() => { setOpen(false); onSwitch(); }}><Icon name="arrow" size={16} /> Switch to {role === "client" ? "creator" : "client"} workspace</button>
           <button role="menuitem" onClick={() => signOutUser()}><Icon name="logout" size={16} /> Sign out</button>
         </div>
       )}
@@ -459,8 +461,157 @@ function Messages() {
   </div></>;
 }
 
-function CreatorProfile() {
-  return <><Topbar title="My profile" subtitle="Your creative storefront on Kreota."/><div className="page-content"><section className="profile-hero"><img src={photos[0]} alt="Maya Chen"/><div><span className="success-pill"><Icon name="check" size={12}/> VERIFIED CREATOR</span><h1>Maya Chen</h1><p>UGC director and visual storyteller making wellness, beauty and everyday tech feel genuinely human.</p><div className="tag-row"><span>New York</span><span>Available in June</span><span>4.9 rating</span></div></div><Button kind="light">Edit profile</Button></section><div className="section-title"><div><h2>Selected work</h2><p>Projects that define your creative point of view.</p></div><Button kind="light" icon="plus">Add project</Button></div><div className="portfolio-grid">{photos.slice(0,3).map((p,i)=><article key={p}><img src={p} alt="Portfolio project"/><div><span>{["WELLNESS","BEAUTY","TECH"][i]}</span><h3>{["The everyday reset","Skin, without the science gap","Tools for better focus"][i]}</h3></div></article>)}</div></div></>;
+function ProfilePage() {
+  const { user, profile } = useAccount();
+  const { role } = useContext(ShellContext);
+  const other: Role = role === "client" ? "creator" : "client";
+  const roles = profile.onboarded?.[other] ? [role, other] : [role];
+  const fields = ROLE_FIELDS[role].flatMap((s) => s.fields);
+  const data = profile[role] ?? {};
+  const filled = fields.filter((f) => typeof data[f.name] === "string" && (data[f.name] as string).trim()).length + (profile.name ? 1 : 0) + (profile.photoURL ? 1 : 0) + (user.emailVerified ? 1 : 0);
+  const strength = Math.round((filled / (fields.length + 3)) * 100);
+  const google = profile.provider === "google.com" || user.providerData.some((p) => p.providerId === "google.com");
+  const since = profile.createdAt ? new Date(profile.createdAt).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" }) : "";
+  const headline = role === "creator" ? [data.category, data.location].filter(Boolean).join(" · ") : [data.brand, data.industry].filter(Boolean).join(" · ");
+  const [resent, setResent] = useState(false);
+
+  return <>
+    <Topbar title="My profile" subtitle={role === "creator" ? "Your creative storefront on Kreota." : "How creators see your brand on Kreota."} />
+    <div className="page-content profile-page">
+      <section className="me-hero">
+        <div className="me-avatar">{profile.photoURL ? <img src={profile.photoURL} alt="" referrerPolicy="no-referrer" /> : <span className={role}>{initials(profile.name)}</span>}</div>
+        <div className="me-main">
+          <div className="me-chips">
+            <span className={`me-chip ${role}`}>{role === "creator" ? "Creator" : "Client"}</span>
+            {user.emailVerified ? <span className="me-chip ok"><Icon name="check" size={12} /> Email verified</span> : <span className="me-chip warn">Email not verified</span>}
+            <span className="me-chip">{google ? "Google account" : "Email & password"}</span>
+          </div>
+          <h1>{role === "creator" && data.displayName ? (data.displayName as string) : profile.name}</h1>
+          {headline && <p className="me-headline">{headline}</p>}
+          <p className="me-meta">{user.email}{since && <> · Member since {since}</>}</p>
+          {!user.emailVerified && <button className="text-button" onClick={() => resendVerification().then(() => setResent(true))}>{resent ? "Verification link sent — check your inbox" : "Send verification link"}</button>}
+        </div>
+        <div className="me-strength">
+          <div className="me-strength-head"><span>Profile strength</span><b>{strength}%</b></div>
+          <div className="progress"><span style={{ width: `${strength}%` }} /></div>
+          <p>{strength >= 100 ? "Complete — you're ready to be matched." : "Fill in the remaining details to improve AI matches."}</p>
+        </div>
+      </section>
+
+      <AccountSection google={google} />
+
+      {roles.map((r) => (
+        <div key={r} className="me-role-group">
+          {roles.length > 1 && <h2 className="me-role-title">{r === "creator" ? "Creator workspace" : "Client workspace"}</h2>}
+          {ROLE_FIELDS[r].map((section) => <DetailsSection key={section.title} role={r} section={section} />)}
+        </div>
+      ))}
+
+      {profile[role]?.agreed === true && <p className="me-footnote"><Icon name="check" size={13} /> You accepted the marketplace guidelines during onboarding.</p>}
+    </div>
+  </>;
+}
+
+function AccountSection({ google }: { google: boolean }) {
+  const { user, profile } = useAccount();
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(profile.name);
+  const [state, setState] = useState<{ busy: boolean; error: string; saved: string }>({ busy: false, error: "", saved: "" });
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) { setState({ busy: false, error: "Enter your name.", saved: "" }); return; }
+    setState({ busy: true, error: "", saved: "" });
+    try { await updateDisplayName(user, name.trim()); setEditing(false); setState({ busy: false, error: "", saved: "Name updated." }); }
+    catch (err) { setState({ busy: false, error: describeError(err), saved: "" }); }
+  };
+  const reset = async () => {
+    setState({ busy: true, error: "", saved: "" });
+    try { await resetPassword(user.email ?? ""); setState({ busy: false, error: "", saved: `Password reset link sent to ${user.email}.` }); }
+    catch (err) { setState({ busy: false, error: describeError(err), saved: "" }); }
+  };
+  return (
+    <section className="me-card">
+      <header><h3>Account</h3>{!editing && <button className="button ghost sm" onClick={() => { setName(profile.name); setEditing(true); setState({ busy: false, error: "", saved: "" }); }}>Edit</button>}</header>
+      {state.error && <div className="auth-alert error" role="alert">{state.error}</div>}
+      {state.saved && <div className="auth-alert" role="status">{state.saved}</div>}
+      {editing ? (
+        <form className="me-form" onSubmit={save}>
+          <label>Full name<input value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" required /></label>
+          <div className="form-actions"><Button kind="ghost" onClick={() => setEditing(false)}>Cancel</Button><button type="submit" className="button dark" disabled={state.busy}>{state.busy ? "Saving…" : "Save"}</button></div>
+        </form>
+      ) : (
+        <dl className="me-list">
+          <div><dt>Full name</dt><dd>{profile.name}</dd></div>
+          <div><dt>Email</dt><dd>{user.email}</dd></div>
+          <div><dt>Sign-in method</dt><dd>{google ? "Continue with Google" : "Email and password"}</dd></div>
+          <div><dt>Last signed in</dt><dd>{profile.lastLoginAt ? new Date(profile.lastLoginAt).toLocaleString() : "—"}</dd></div>
+          {!google && <div><dt>Password</dt><dd><button className="text-button" onClick={reset} disabled={state.busy}>Send password reset email</button></dd></div>}
+        </dl>
+      )}
+    </section>
+  );
+}
+
+function DetailsSection({ role, section }: { role: Role; section: FieldSection }) {
+  const { user, profile } = useAccount();
+  const data = profile[role] ?? {};
+  const [editing, setEditing] = useState(false);
+  const [state, setState] = useState<{ busy: boolean; error: string; saved: boolean }>({ busy: false, error: "", saved: false });
+  const value = (name: string) => (typeof data[name] === "string" ? (data[name] as string) : "");
+
+  const save = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const values: FormValues = {};
+    new FormData(e.currentTarget).forEach((v, k) => { values[k] = typeof v === "string" ? v.trim() : ""; });
+    const missing = section.fields.find((f) => f.required && !values[f.name]);
+    if (missing) { setState({ busy: false, error: `${missing.label} is required.`, saved: false }); return; }
+    setState({ busy: true, error: "", saved: false });
+    try { await saveProfileFields(user.uid, role, values); setEditing(false); setState({ busy: false, error: "", saved: true }); }
+    catch (err) { setState({ busy: false, error: describeError(err), saved: false }); }
+  };
+
+  return (
+    <section className="me-card">
+      <header>
+        <h3>{section.title}</h3>
+        {state.saved && !editing && <span className="me-saved"><Icon name="check" size={13} /> Saved</span>}
+        {!editing && <button className="button ghost sm" onClick={() => { setEditing(true); setState({ busy: false, error: "", saved: false }); }}>Edit</button>}
+      </header>
+      {state.error && <div className="auth-alert error" role="alert">{state.error}</div>}
+      {editing ? (
+        <form className="me-form" onSubmit={save} noValidate>
+          <div className="me-form-grid">
+            {section.fields.map((f) => (
+              <label key={f.name} className={f.kind === "textarea" ? "wide" : ""}>
+                {f.label}{f.required && <span className="req"> *</span>}
+                {f.kind === "select" ? (
+                  <select name={f.name} defaultValue={value(f.name) || f.options![0]}>{f.options!.map((o) => <option key={o}>{o}</option>)}</select>
+                ) : f.kind === "textarea" ? (
+                  <textarea name={f.name} defaultValue={value(f.name)} placeholder={f.placeholder} />
+                ) : (
+                  <input name={f.name} defaultValue={value(f.name)} placeholder={f.placeholder} inputMode={f.kind === "url" ? "url" : undefined} />
+                )}
+              </label>
+            ))}
+          </div>
+          <div className="form-actions"><Button kind="ghost" onClick={() => setEditing(false)}>Cancel</Button><button type="submit" className="button dark" disabled={state.busy}>{state.busy ? "Saving…" : "Save changes"}</button></div>
+        </form>
+      ) : (
+        <dl className="me-list">
+          {section.fields.map((f) => {
+            const v = value(f.name);
+            const link = f.kind === "url" ? toLink(v) : null;
+            return (
+              <div key={f.name} className={f.kind === "textarea" ? "wide" : ""}>
+                <dt>{f.label}</dt>
+                <dd>{!v ? <span className="me-empty">Not added yet</span> : link ? <a href={link} target="_blank" rel="noopener noreferrer">{v}</a> : v}</dd>
+              </div>
+            );
+          })}
+        </dl>
+      )}
+    </section>
+  );
 }
 
 function AppShell({ role, onSwitch }: { role: Role; onSwitch: () => void }) {
@@ -470,11 +621,11 @@ function AppShell({ role, onSwitch }: { role: Role; onSwitch: () => void }) {
   const page=role==="client"?clientPage:creatorPage;
   let content: ReactNode;
   if(role==="client"){
-    content=clientPage==="home"?<ClientHome goCreators={()=>setClientPage("creators")}/>:clientPage==="creators"?<CreatorMarketplace/>:clientPage==="projects"?<Projects/>:<Messages/>;
+    content=clientPage==="home"?<ClientHome goCreators={()=>setClientPage("creators")}/>:clientPage==="creators"?<CreatorMarketplace/>:clientPage==="projects"?<Projects/>:clientPage==="profile"?<ProfilePage/>:<Messages/>;
   } else {
-    content=creatorPage==="home"?<CreatorHome go={setCreatorPage}/>:creatorPage==="opportunities"?<Opportunities/>:creatorPage==="messages"?<Messages/>:creatorPage==="studio"?<Studio key={user.uid} userId={user.uid}/>:<CreatorProfile/>;
+    content=creatorPage==="home"?<CreatorHome go={setCreatorPage}/>:creatorPage==="opportunities"?<Opportunities/>:creatorPage==="messages"?<Messages/>:creatorPage==="studio"?<Studio key={user.uid} userId={user.uid}/>:<ProfilePage/>;
   }
-  return <ShellContext.Provider value={{ role, onSwitch }}><div className="app-shell"><Sidebar role={role} page={page} onPage={role==="client"?setClientPage:setCreatorPage} onSwitch={onSwitch}/><main className="app-main">{content}</main></div></ShellContext.Provider>;
+  return <ShellContext.Provider value={{ role, onSwitch, openProfile: () => (role === "client" ? setClientPage("profile") : setCreatorPage("profile")) }}><div className="app-shell"><Sidebar role={role} page={page} onPage={role==="client"?setClientPage:setCreatorPage} onSwitch={onSwitch}/><main className="app-main">{content}</main></div></ShellContext.Provider>;
 }
 
 function Splash() {

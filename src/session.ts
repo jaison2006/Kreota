@@ -97,14 +97,21 @@ export function useSession(): Session {
 
 export async function signUpWithEmail(name: string, email: string, password: string) {
   pendingSignupName = name;
+  let user: User;
   try {
-    const { user } = await createUserWithEmailAndPassword(auth, email, password);
+    ({ user } = await createUserWithEmailAndPassword(auth, email, password));
+  } catch (e) {
+    pendingSignupName = null;
+    throw e;
+  }
+  // The account exists now. The rest is best-effort: the auth listener also creates the
+  // profile (using pendingSignupName), so a hiccup here shouldn't surface as a failed sign-up.
+  try {
     await updateProfile(user, { displayName: name });
     await ensureProfile(user, name);
-    sendEmailVerification(user).catch(() => {});
-  } finally {
     pendingSignupName = null;
-  }
+  } catch { /* the listener finishes the profile */ }
+  sendEmailVerification(user).catch(() => {});
 }
 
 export async function signInWithEmail(email: string, password: string) {
@@ -137,7 +144,16 @@ export const setRole = (uid: string, role: Role) => update(userRef(uid), { role 
 export const saveOnboardingStep = (uid: string, role: Role, values: FormValues) =>
   update(userRef(uid), Object.fromEntries(Object.entries(values).map(([k, v]) => [`${role}/${k}`, v])));
 
-export const completeOnboarding = (uid: string, role: Role, values: FormValues) =>
+/** Saves edits made on the profile page. */
+export const saveProfileFields = (uid: string, role: Role, values: FormValues) =>
+  update(userRef(uid), Object.fromEntries(Object.entries(values).map(([k, v]) => [`${role}/${k}`, v])));
+
+export async function updateDisplayName(user: User, name: string) {
+  await updateProfile(user, { displayName: name });
+  await update(userRef(user.uid), { name });
+}
+
+export const completeOnboarding =(uid: string, role: Role, values: FormValues) =>
   update(userRef(uid), { ...Object.fromEntries(Object.entries(values).map(([k, v]) => [`${role}/${k}`, v])), [`onboarded/${role}`]: true, role });
 
 /* ---------- errors ---------- */
