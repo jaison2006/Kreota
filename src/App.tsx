@@ -8,7 +8,7 @@ import {
 import { OPTIONS, ROLE_FIELDS, toLink, type FieldSection } from "./profileFields";
 import { CLIENTS, CREATORS, formatCount, formatINR, formatINRShort, matchScore, totalFollowers, type SeedClient, type SeedCreator } from "./data/india";
 import { creatorAvatar } from "./data/avatars";
-import { conversationId, markRead, openConversation, publishDirectoryEntry, sendMessage, useDirectory, useInbox, useMessages, type DirectoryEntry } from "./messaging";
+import { conversationId, DEMO_CONTACTS, demoIdOf, isDemoId, markDemoRead, markRead, openConversation, openDemoConversation, publishDirectoryEntry, sendDemoMessage, sendMessage, useDemoInbox, useDemoMessages, useDirectory, useInbox, useMessages, type Contact, type DirectoryEntry } from "./messaging";
 
 interface Account { user: User; profile: Profile }
 const AccountContext = createContext<Account | null>(null);
@@ -291,7 +291,9 @@ function Onboarding({ role }: { role: Role }) {
 
 function Sidebar({ role, page, onPage, onSwitch }: { role: Role; page: string; onPage: (p: any) => void; onSwitch: () => void }) {
   const { profile, user } = useAccount();
-  const unread = useInbox(user.uid).data.reduce((n, r) => n + (r.unread ?? 0), 0);
+  const inboxRows = useInbox(user.uid).data;
+  const demoRows = useDemoInbox(user.uid).data;
+  const unread = [...inboxRows, ...demoRows].reduce((n, r) => n + (r.unread ?? 0), 0);
   const clientNav = [["home","home","AI workspace"],["creators","users","Discover creators"],["projects","brief","Projects"],["messages","chat","Messages"],["profile","users","My profile"]];
   const creatorNav = [["home","home","Overview"],["opportunities","brief","Opportunities"],["messages","chat","Messages"],["studio","spark","Kreota Studio"],["profile","users","My profile"]];
   const nav = role === "client" ? clientNav : creatorNav;
@@ -805,7 +807,7 @@ function dayLabel(at: number) {
   return d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
 }
 
-function PersonAvatar({ entry, size = 40 }: { entry?: DirectoryEntry; size?: number }) {
+function PersonAvatar({ entry, size = 40 }: { entry?: Contact; size?: number }) {
   const name = entry?.name ?? "Kreota member";
   const tone = entry?.roles.includes("creator") && !entry.roles.includes("client") ? "creator" : "client";
   return entry?.photoURL
@@ -813,14 +815,20 @@ function PersonAvatar({ entry, size = 40 }: { entry?: DirectoryEntry; size?: num
     : <span className={`msg-avatar ${tone}`} style={{ width: size, height: size }}>{initials(name)}</span>;
 }
 
-const roleText = (e?: DirectoryEntry) => (e ? e.roles.map((r) => (r === "creator" ? "Creator" : "Client")).join(" · ") : "");
+const roleText = (e?: Contact) => (e ? (e.demo ? (e.roles.includes("creator") ? "Demo creator" : "Demo brand") : e.roles.map((r) => (r === "creator" ? "Creator" : "Client")).join(" · ")) : "");
 
 function Messages() {
   const { user } = useAccount();
   const me = user.uid;
-  const inbox = useInbox(me);
+  const realInbox = useInbox(me);
+  const demoInbox = useDemoInbox(me);
   const directory = useDirectory();
-  const people = new Map(directory.data.map((d) => [d.uid, d]));
+  const people = new Map<string, Contact>([...DEMO_CONTACTS, ...directory.data].map((d) => [d.uid, d]));
+  const inbox = {
+    loading: realInbox.loading && demoInbox.loading,
+    error: realInbox.error,
+    data: [...realInbox.data, ...demoInbox.data].sort((a, b) => (b.lastAt ?? b.updatedAt ?? 0) - (a.lastAt ?? a.updatedAt ?? 0)),
+  };
   const [active, setActive] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
   const [search, setSearch] = useState("");
@@ -836,7 +844,9 @@ function Messages() {
   const startWith = async (other: string) => {
     setError("");
     try {
-      const cid = await openConversation(me, other, inbox.data.some((r) => r.cid === conversationId(me, other)));
+      const cid = isDemoId(other)
+        ? await openDemoConversation(me, other)
+        : await openConversation(me, other, realInbox.data.some((r) => r.cid === conversationId(me, other)));
       setActive(cid);
       setPicking(false);
     } catch (e) {
@@ -889,7 +899,7 @@ function Messages() {
         {blocked ? (
           <div className="msg-empty"><Icon name="chat" size={26} /><b>Messaging is waiting for database rules</b><p>The Realtime Database rules need the messaging section before conversations can load.</p></div>
         ) : picking ? (
-          <PeoplePicker people={directory.data.filter((d) => d.uid !== me)} loading={directory.loading} onPick={startWith} onBack={() => setPicking(false)} error={error} />
+          <PeoplePicker people={[...directory.data.filter((d) => d.uid !== me), ...DEMO_CONTACTS]} loading={directory.loading} onPick={startWith} onBack={() => setPicking(false)} error={error} />
         ) : active ? (
           <Chat key={active} cid={active} other={people.get(activeRow?.with ?? "")} otherId={activeRow?.with ?? ""} unread={activeRow?.unread ?? 0} onBack={() => setActive(null)} />
         ) : (
@@ -900,14 +910,14 @@ function Messages() {
   </>;
 }
 
-function PeoplePicker({ people, loading, onPick, onBack, error }: { people: DirectoryEntry[]; loading: boolean; onPick: (uid: string) => void; onBack: () => void; error: string }) {
+function PeoplePicker({ people, loading, onPick, onBack, error }: { people: Contact[]; loading: boolean; onPick: (uid: string) => void; onBack: () => void; error: string }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<"all" | Role>("all");
   const [busy, setBusy] = useState<string | null>(null);
   const list = people
     .filter((p) => filter === "all" || p.roles.includes(filter))
     .filter((p) => `${p.name} ${p.headline}`.toLowerCase().includes(q.trim().toLowerCase()))
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) => Number(!!a.demo) - Number(!!b.demo) || a.name.localeCompare(b.name));
   return (
     <div className="msg-picker">
       <header className="msg-chat-head">
@@ -928,20 +938,23 @@ function PeoplePicker({ people, loading, onPick, onBack, error }: { people: Dire
           : list.length ? list.map((p) => (
             <button key={p.uid} className="msg-person" disabled={!!busy} onClick={() => { setBusy(p.uid); Promise.resolve(onPick(p.uid)).finally(() => setBusy(null)); }}>
               <PersonAvatar entry={p} size={44} />
-              <div><b>{p.name}</b><span>{p.headline || roleText(p) || "Kreota member"}</span></div>
+              <div><b>{p.name}{p.demo && <em className="msg-demo-tag">Demo</em>}</b><span>{p.headline || roleText(p) || "Kreota member"}</span></div>
               <small>{busy === p.uid ? "Opening…" : roleText(p)}</small>
             </button>
           ))
-          : <div className="msg-empty small"><b>No one found</b><p>{people.length ? "Try another search." : "Nobody else has joined Kreota yet. Invite a creator or brand to sign up."}</p></div>}
+          : <div className="msg-empty small"><b>No one found</b><p>{people.length ? "Try another search or tab." : "Nobody else has joined Kreota yet. Invite a creator or brand to sign up."}</p></div>}
       </div>
     </div>
   );
 }
 
-function Chat({ cid, other, otherId, unread, onBack }: { cid: string; other?: DirectoryEntry; otherId: string; unread: number; onBack: () => void }) {
-  const { user } = useAccount();
+function Chat({ cid, other, otherId, unread, onBack }: { cid: string; other?: Contact; otherId: string; unread: number; onBack: () => void }) {
+  const { user, profile } = useAccount();
   const me = user.uid;
-  const msgs = useMessages(cid);
+  const demoId = demoIdOf(cid);
+  const real = useMessages(demoId ? null : cid);
+  const demo = useDemoMessages(demoId ? me : null, demoId);
+  const msgs = demoId ? demo : real;
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
@@ -950,8 +963,8 @@ function Chat({ cid, other, otherId, unread, onBack }: { cid: string; other?: Di
 
   // Opening a conversation (or receiving while it's open) clears its unread count.
   useEffect(() => {
-    if (unread > 0 && document.visibilityState === "visible") markRead(me, cid).catch(() => {});
-  }, [unread, me, cid, msgs.data.length]);
+    if (unread > 0 && document.visibilityState === "visible") (demoId ? markDemoRead(me, demoId) : markRead(me, cid)).catch(() => {});
+  }, [unread, me, cid, demoId, msgs.data.length]);
 
   useEffect(() => {
     const el = listRef.current;
@@ -967,7 +980,8 @@ function Chat({ cid, other, otherId, unread, onBack }: { cid: string; other?: Di
     setError("");
     setDraft("");
     try {
-      await sendMessage(cid, me, otherId, text);
+      if (demoId) await sendDemoMessage(me, demoId, text, profile.name, msgs.data.filter((m) => m.senderId === me).length);
+      else await sendMessage(cid, me, otherId, text);
     } catch (e) {
       setDraft(text);
       setError(describeError(e));
@@ -985,6 +999,7 @@ function Chat({ cid, other, otherId, unread, onBack }: { cid: string; other?: Di
         <PersonAvatar entry={other} />
         <div><b>{other?.name ?? "Kreota member"}</b><span>{[roleText(other), other?.headline].filter(Boolean).join(" · ") || "Kreota member"}</span></div>
       </header>
+      {demoId && <p className="msg-demo-note">This is a demo profile, not a real account. Replies are written automatically so you can try messaging.</p>}
       <div className="msg-thread" ref={listRef} aria-live="polite">
         {msgs.loading ? <div className="msg-loading"><span className="splash-spinner" /></div>
           : !msgs.data.length ? <div className="msg-empty small"><b>Start the conversation</b><p>Introduce yourself and what you'd like to create together.</p></div>
@@ -1000,7 +1015,7 @@ function Chat({ cid, other, otherId, unread, onBack }: { cid: string; other?: Di
                 {showDay && <div className="msg-day"><span>{label}</span></div>}
                 <div className={`msg-bubble${mine ? " mine" : ""}${tail ? " tail" : ""}`}>
                   <p>{m.text}</p>
-                  {tail && <time>{m.at ? new Date(m.at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : ""}</time>}
+                  {tail && <time>{"auto" in m && m.auto ? "Automatic reply · " : ""}{m.at ? new Date(m.at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : ""}</time>}
                 </div>
               </div>
             );
