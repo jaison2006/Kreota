@@ -1,4 +1,4 @@
-# Kreota — Claude Build Prompt
+# Kreota — Build Prompt
 
 Build a polished, responsive web application named **Kreota**, an AI Content Creator Marketplace that connects verified brands with verified content creators and supports the full workflow from campaign idea to final content delivery.
 
