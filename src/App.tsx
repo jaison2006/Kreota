@@ -433,6 +433,17 @@ function rawBriefFit(b: SeedClient, p: Profile) {
   return fit;
 }
 
+/** First visit to Overview or Opportunities: shortlist the top 3 briefs once per account, so both pages start with data. */
+function useStarterShortlist(scores: Map<string, number>) {
+  const { user, profile } = useAccount();
+  useEffect(() => {
+    if (profile.seeded?.interested) return;
+    const top = [...scores].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([id]) => id);
+    seedInterested(user.uid, top).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile.seeded?.interested, user.uid]);
+}
+
 /** Match % for every brief, scaled across all 50 so your best fits always land near the top (58–97%). */
 function briefScores(p: Profile): Map<string, number> {
   const raw = CLIENTS.map((b) => [b.id, rawBriefFit(b, p)] as const);
@@ -669,12 +680,7 @@ function Opportunities() {
   const filtersOn = !!(q || industry || platform || minBudget);
   const reset = () => { setQ(""); setIndustry(""); setPlatform(""); setMinBudget(0); };
   const toggle = (b: SeedClient) => setListed(user.uid, "interested", b.id, !interested[b.id]);
-  // First visit: shortlist your top 3 so the Interested tab has something to work with. Runs once per account.
-  useEffect(() => {
-    if (profile.seeded?.interested) return;
-    seedInterested(user.uid, recommended.slice(0, 3).map((x) => x.b.id)).catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile.seeded?.interested, user.uid]);
+  useStarterShortlist(scores);
   const sortLabel = { match: "best match", newest: "newest", budget: "highest budget", deadline: "soonest deadline" }[sort];
   const tabs: [BriefView, string, number][] = [["recommended", "Recommended for you", recommended.length], ["all", "All briefs", scored.length], ["closing", "Closing soon", closing.length], ["interested", "Interested", mine.length]];
 
@@ -851,18 +857,155 @@ function Projects() {
   </>;
 }
 
+/** Share of profile details filled in for a workspace, plus what's still missing (same rule as My profile). */
+function profileStrength(profile: Profile, user: User, role: Role) {
+  const fields = ROLE_FIELDS[role].flatMap((s) => s.fields);
+  const data = profile[role] ?? {};
+  const missing = fields.filter((f) => !(typeof data[f.name] === "string" && (data[f.name] as string).trim())).map((f) => f.label);
+  if (!profile.name) missing.push("Full name");
+  if (!profile.photoURL) missing.push("Profile photo");
+  if (!user.emailVerified) missing.push("Verified email");
+  const total = fields.length + 3;
+  return { pct: Math.round(((total - missing.length) / total) * 100), missing };
+}
+
 function CreatorHome({ go }: { go: (p: CreatorPage) => void }) {
-  const { profile } = useAccount();
+  const { user, profile } = useAccount();
+  const scores = useMemo(() => briefScores(profile), [profile.creator]);
+  useStarterShortlist(scores);
+  const ranked = CLIENTS.map((b) => ({ b, score: scores.get(b.id) ?? 60 })).sort((a, b) => b.score - a.score);
+  const strong = ranked.filter((x) => x.score >= 80);
+  const interested = profile.interested ?? {};
+  const shortlisted = ranked.filter((x) => interested[x.b.id]);
+  const closing = ranked.filter((x) => x.b.brief.deadlineDays <= 10);
+  const closingShortlisted = shortlisted.filter((x) => x.b.brief.deadlineDays <= 10).sort((a, b) => a.b.brief.deadlineDays - b.b.brief.deadlineDays);
+
+  const realInbox = useInbox(user.uid).data;
+  const demoInbox = useDemoInbox(user.uid).data;
+  const directory = useDirectory().data;
+  const people = new Map<string, Contact>([...DEMO_CONTACTS, ...directory].map((d) => [d.uid, d]));
+  const threads = [...realInbox, ...demoInbox].sort((a, b) => (b.lastAt ?? b.updatedAt ?? 0) - (a.lastAt ?? a.updatedAt ?? 0));
+  const unread = threads.reduce((n, t) => n + (t.unread ?? 0), 0);
+
+  const strength = profileStrength(profile, user, "creator");
+  const [open, setOpen] = useState<SeedClient | null>(null);
+  const toggle = (b: SeedClient) => setListed(user.uid, "interested", b.id, !interested[b.id]);
+
+  // Market numbers come from your 12 best-fitting briefs.
+  const top = ranked.slice(0, 12);
+  const avgBudget = Math.round(top.reduce((s, x) => s + (x.b.brief.budget[0] + x.b.brief.budget[1]) / 2, 0) / Math.max(1, top.length));
+  const count = (xs: string[]) => [...xs.reduce((m, x) => m.set(x, (m.get(x) ?? 0) + 1), new Map<string, number>())].sort((a, b) => b[1] - a[1]);
+  const topNiches = count(top.flatMap((x) => x.b.brief.niches)).slice(0, 5);
+  const topPlatforms = count(top.flatMap((x) => x.b.brief.platforms)).slice(0, 3);
+  const c = profile.creator ?? {};
+
+  type Move = { key: string; icon: string; tone: string; title: string; detail: string; badge: string; act: () => void };
+  const moves: Move[] = [];
+  for (const t of threads.filter((t) => t.unread).slice(0, 2)) {
+    const p = people.get(t.with);
+    moves.push({ key: `m-${t.cid}`, icon: "chat", tone: "lilac", title: `Reply to ${p?.name ?? "a Kreota member"}`, detail: t.lastText ?? "New message", badge: `${t.unread} unread`, act: () => go("messages") });
+  }
+  for (const x of closingShortlisted.slice(0, 2)) {
+    moves.push({ key: `b-${x.b.id}`, icon: "clock", tone: "peach", title: `${x.b.brief.title} — ${x.b.brand}`, detail: `Shortlisted brief · ${briefBudget(x.b)}`, badge: `${x.b.brief.deadlineDays} days left`, act: () => setOpen(x.b) });
+  }
+  for (const label of strength.missing.filter((m) => m !== "Profile photo" && m !== "Verified email").slice(0, 2)) {
+    moves.push({ key: `p-${label}`, icon: "users", tone: "mint", title: `Fill in “${label}”`, detail: "Better profiles get better matches", badge: "Profile", act: () => go("profile") });
+  }
+  if (!shortlisted.length) moves.push({ key: "shortlist", icon: "star", tone: "mint", title: "Shortlist briefs you like", detail: `${strong.length} briefs fit you well right now`, badge: "Opportunities", act: () => go("opportunities") });
+  moves.push({ key: "studio", icon: "spark", tone: "lilac", title: "Edit your next video in Kreota Studio", detail: "Trim, caption and export reels in the browser", badge: "Studio", act: () => go("studio") });
+
+  const best = ranked[0];
   return <>
-    <Topbar title={`Welcome back, ${firstName(profile)}.`} subtitle="Your creative business, in motion." />
-    <div className="page-content">
-      <section className="creator-welcome"><div><span className="success-pill">CREATOR PULSE</span><h2>You’re a top match for 6 new briefs.</h2><p>Your short-form wellness work is trending with verified brands this week.</p><Button kind="accent" icon="arrow" onClick={()=>go("opportunities")}>View opportunities</Button></div><div className="pulse-orbit"><div><b>94</b><span>PROFILE<br/>STRENGTH</span></div></div></section>
-      <div className="metric-grid creator-metrics"><div className="metric-card"><span>THIS MONTH</span><b>₹1,84,500</b><p><i>+24%</i> from last month</p></div><div className="metric-card lilac"><span>ACTIVE PROJECTS</span><b>03</b><p>1 deliverable due soon</p></div><div className="metric-card mint"><span>NEW INVITES</span><b>06</b><p>4 are high-match</p></div><div className="metric-card peach"><span>AVG. RATING</span><b>4.9</b><p>Across 38 projects</p></div></div>
-      <div className="dashboard-grid">
-        <section className="panel task-list"><div className="panel-head"><div><span>TODAY</span><h3>Your next moves</h3></div><button className="text-button">View calendar</button></div>{[["Upload first cut",`${CLIENTS[0].brief.title} · ${CLIENTS[0].brand}`,"Due today","peach"],["Review new brief",`${CLIENTS[16].brief.title} · ${CLIENTS[16].brand}`,"New today","mint"],["Reply to "+CLIENTS[7].contact.name.split(" ")[0],CLIENTS[7].brand,"Waiting on you","lilac"]].map(([a,b,c,t])=><button className="task-row" key={a}><i className={t}><Icon name={a.includes("Upload")?"upload":a.includes("Review")?"brief":"chat"} /></i><div><b>{a}</b><span>{b}</span></div><em>{c}</em><Icon name="arrow" size={15}/></button>)}</section>
-        <section className="panel"><div className="panel-head"><div><span>PERFORMANCE</span><h3>Portfolio insights</h3></div><button><Icon name="more"/></button></div><div className="chart"><div className="chart-line"><span/><span/><span/><span/><span/><span/></div><div className="chart-labels"><span>Jan</span><span>Feb</span><span>Mar</span><span>Apr</span><span>May</span><span>Jun</span></div></div><p className="chart-note"><Icon name="spark" size={15}/> Product storytelling is your fastest-growing category.</p></section>
+    <Topbar title={`${greeting()}, ${firstName(profile)}.`} subtitle="Here's what's happening with your creator business." />
+    <div className="page-content ov">
+      <section className="ov-hero">
+        <div className="ov-hero-main">
+          <span className="success-pill">CREATOR PULSE</span>
+          <h2>You're a strong match for {strong.length} brand briefs.</h2>
+          <p>Top fit right now: <b>{best.b.brief.title}</b> from {best.b.brand} — {best.score}% match, {briefBudget(best.b)}.</p>
+          <div className="ov-hero-actions">
+            <Button kind="accent" icon="arrow" onClick={() => go("opportunities")}>View opportunities</Button>
+            <button className="ov-ghost" onClick={() => setOpen(best.b)}>Open top brief</button>
+          </div>
+        </div>
+        <div className="ov-strength">
+          <div className="ov-ring" style={{ ["--p" as string]: `${strength.pct}` }} role="img" aria-label={`Profile ${strength.pct}% complete`}><b>{strength.pct}%</b><span>profile</span></div>
+          <div>
+            <b>{strength.pct >= 100 ? "Profile complete" : "Complete your profile"}</b>
+            {strength.missing.length ? <ul>{strength.missing.slice(0, 3).map((m) => <li key={m}>{m}</li>)}</ul> : <p>Brands see everything they need.</p>}
+            {strength.missing.length > 0 && <button className="ov-link" onClick={() => go("profile")}>Finish profile <Icon name="arrow" size={13} /></button>}
+          </div>
+        </div>
+      </section>
+
+      <section className="op2-stats" aria-label="Summary">
+        <button className="mint" onClick={() => go("opportunities")}><span>Strong matches</span><b>{strong.length}</b><small>80%+ fit with your profile</small></button>
+        <button className="peach" onClick={() => go("opportunities")}><span>Closing soon</span><b>{closing.length}</b><small>{closingShortlisted.length ? `${closingShortlisted.length} on your shortlist` : "Deadlines within 10 days"}</small></button>
+        <button className="lilac" onClick={() => go("opportunities")}><span>Shortlisted</span><b>{shortlisted.length}</b><small>Briefs you're interested in</small></button>
+        <button onClick={() => go("messages")}><span>Unread messages</span><b>{unread}</b><small>{threads.length} conversation{threads.length === 1 ? "" : "s"}</small></button>
+      </section>
+
+      <div className="ov-grid">
+        <section className="panel ov-panel">
+          <div className="panel-head"><div><span>FOR YOU</span><h3>Top matches</h3></div><button className="text-button" onClick={() => go("opportunities")}>All briefs <Icon name="arrow" size={14} /></button></div>
+          <div className="ov-briefs">{ranked.slice(0, 4).map(({ b, score }) => (
+            <button key={b.id} className="ov-brief" onClick={() => setOpen(b)}>
+              <BrandMark client={b} size={40} />
+              <div><b>{b.brief.title}</b><span>{b.brand} · {briefBudget(b)} · {b.brief.deadlineDays} days</span></div>
+              <span className={`op2-match ${matchTone(score)}`}><Icon name="spark" size={12} />{score}%</span>
+            </button>
+          ))}</div>
+        </section>
+
+        <section className="panel ov-panel">
+          <div className="panel-head"><div><span>TODAY</span><h3>Your next moves</h3></div></div>
+          <div className="ov-moves">{moves.slice(0, 5).map((m) => (
+            <button key={m.key} className="task-row" onClick={m.act}>
+              <i className={m.tone}><Icon name={m.icon} /></i>
+              <div><b>{m.title}</b><span>{m.detail}</span></div>
+              <em>{m.badge}</em>
+              <Icon name="arrow" size={15} />
+            </button>
+          ))}</div>
+        </section>
+
+        <section className="panel ov-panel">
+          <div className="panel-head"><div><span>INBOX</span><h3>Recent messages</h3></div><button className="text-button" onClick={() => go("messages")}>Open messages <Icon name="arrow" size={14} /></button></div>
+          {threads.length ? (
+            <div className="ov-threads">{threads.slice(0, 4).map((t) => {
+              const p = people.get(t.with);
+              return (
+                <button key={t.cid} className={`ov-thread${t.unread ? " unread" : ""}`} onClick={() => go("messages")}>
+                  <PersonAvatar entry={p} size={38} />
+                  <div><b>{p?.name ?? "Kreota member"}</b><span>{t.lastText ? `${t.lastSender === user.uid ? "You: " : ""}${t.lastText}` : "No messages yet"}</span></div>
+                  <div className="ov-thread-meta"><time>{shortTime(t.lastAt ?? t.updatedAt)}</time>{!!t.unread && <i>{t.unread}</i>}</div>
+                </button>
+              );
+            })}</div>
+          ) : (
+            <div className="ov-empty"><Icon name="chat" size={22} /><p>No conversations yet. Message a brand about a brief you like.</p><Button kind="light" onClick={() => go("messages")}>Start a conversation</Button></div>
+          )}
+        </section>
+
+        <section className="panel ov-panel">
+          <div className="panel-head"><div><span>YOUR BUSINESS</span><h3>Rate card & market</h3></div><button className="text-button" onClick={() => go("profile")}>Edit <Icon name="arrow" size={14} /></button></div>
+          <dl className="ov-rate">
+            <div><dt>Your typical rate</dt><dd>{(c.rate as string) || "Not set"}</dd></div>
+            <div><dt>Availability</dt><dd>{(c.availability as string) || "Not set"}</dd></div>
+            <div><dt>Category</dt><dd>{(c.category as string) || "Not set"}</dd></div>
+            <div><dt>Based in</dt><dd>{(c.location as string) || "Not set"}</dd></div>
+          </dl>
+          <div className="ov-market">
+            <p><b>{formatINRShort(avgBudget)}</b> average budget across your top 12 briefs</p>
+            <span>Most requested in your matches</span>
+            <div className="op2-tags">{topNiches.map(([n, k]) => <span key={n}>{n} · {k}</span>)}</div>
+            <span>Where brands want content</span>
+            <div className="op2-tags">{topPlatforms.map(([n, k]) => <span key={n} className="plat">{n} · {k}</span>)}</div>
+          </div>
+        </section>
       </div>
     </div>
+    {open && <BriefDrawer b={open} score={scores.get(open.id) ?? 60} interested={!!interested[open.id]} onToggle={() => toggle(open)} onClose={() => setOpen(null)} />}
   </>;
 }
 
@@ -1204,8 +1347,7 @@ function ProfilePage() {
   const roles = profile.onboarded?.[other] ? [role, other] : [role];
   const fields = ROLE_FIELDS[role].flatMap((s) => s.fields);
   const data = profile[role] ?? {};
-  const filled = fields.filter((f) => typeof data[f.name] === "string" && (data[f.name] as string).trim()).length + (profile.name ? 1 : 0) + (profile.photoURL ? 1 : 0) + (user.emailVerified ? 1 : 0);
-  const strength = Math.round((filled / (fields.length + 3)) * 100);
+  const strength = profileStrength(profile, user, role).pct;
   const google = profile.provider === "google.com" || user.providerData.some((p) => p.providerId === "google.com");
   const since = profile.createdAt ? new Date(profile.createdAt).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" }) : "";
   const headline = role === "creator" ? [data.category, data.location].filter(Boolean).join(" · ") : [data.brand, data.industry].filter(Boolean).join(" · ");
