@@ -9,6 +9,7 @@ import { OPTIONS, ROLE_FIELDS, toLink, type FieldSection } from "./profileFields
 import { CLIENTS, CREATORS, formatCount, formatINR, formatINRShort, matchScore, totalFollowers, type SeedClient, type SeedCreator } from "./data/india";
 import { creatorAvatar } from "./data/avatars";
 import { conversationId, DEMO_CONTACTS, demoIdOf, isDemoId, markDemoRead, markRead, openConversation, openDemoConversation, publishDirectoryEntry, sendDemoMessage, sendMessage, useDemoInbox, useDemoMessages, useDirectory, useInbox, useMessages, type Contact, type DirectoryEntry } from "./messaging";
+import { analyzeCampaign, type CampaignAnalysis } from "./lib/api";
 
 interface Account { user: User; profile: Profile }
 const AccountContext = createContext<Account | null>(null);
@@ -63,8 +64,8 @@ function Logo({ compact = false }: { compact?: boolean }) {
   return <div className="brand"><img src="/kreota-logo.png" alt="Kreota logo" /><span className={compact ? "sr-only" : ""}>Kreota</span></div>;
 }
 
-function Button({ children, kind = "dark", icon, onClick, type = "button", className = "" }: { children: ReactNode; kind?: "dark" | "light" | "ghost" | "accent"; icon?: string; onClick?: () => void; type?: "button" | "submit"; className?: string }) {
-  return <button type={type} className={`button ${kind} ${className}`} onClick={onClick}>{children}{icon && <Icon name={icon} size={16} />}</button>;
+function Button({ children, kind = "dark", icon, onClick, type = "button", className = "", disabled }: { children: ReactNode; kind?: "dark" | "light" | "ghost" | "accent"; icon?: string; onClick?: () => void; type?: "button" | "submit"; className?: string; disabled?: boolean }) {
+  return <button type={type} className={`button ${kind} ${className}`} onClick={onClick} disabled={disabled}>{children}{icon && <Icon name={icon} size={16} />}</button>;
 }
 
 const GoogleMark = () => <svg viewBox="0 0 24 24" width="18" height="18"><path fill="#4285F4" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.8h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.3Z"/><path fill="#34A853" d="M12 22c2.7 0 5-.9 6.6-2.5L15.4 17c-.9.6-2 1-3.4 1a5.8 5.8 0 0 1-5.5-4H3.2v2.6A10 10 0 0 0 12 22Z"/><path fill="#FBBC05" d="M6.5 14a6 6 0 0 1 0-3.9V7.5H3.2a10 10 0 0 0 0 9.1L6.5 14Z"/><path fill="#EA4335" d="M12 6.1c1.5 0 2.8.5 3.8 1.5l2.9-2.8A9.7 9.7 0 0 0 3.2 7.5l3.3 2.6A5.8 5.8 0 0 1 12 6Z"/></svg>;
@@ -343,17 +344,93 @@ function Topbar({ title, subtitle }: { title: string; subtitle?: string }) {
 
 function ClientHome({ goCreators }: { goCreators: () => void }) {
   const { profile } = useAccount();
-  const [generated, setGenerated] = useState(false);
   const [prompt, setPrompt] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [analysis, setAnalysis] = useState<CampaignAnalysis | null>(null);
+
+  const handleBuildStrategy = async () => {
+    const trimmed = prompt.trim();
+    if (trimmed.length < 10) {
+      setError("Please describe your campaign with at least 10 characters so Gemini can analyze it.");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await analyzeCampaign(trimmed);
+      setAnalysis(result);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to analyze campaign.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return <>
     <Topbar title={`${greeting()}, ${firstName(profile)}.`} subtitle="What are we creating today?" />
     <div className="page-content client-home">
       <section className="ai-composer">
         <div className="composer-label"><Icon name="spark" /><span>KREOTA INTELLIGENCE</span></div>
-        <textarea value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Describe your product, audience and what you want to create..." />
-        <div className="composer-footer"><div className="prompt-chips"><button onClick={() => setPrompt("Launch campaign for our new adaptogenic sparkling water")}>Product launch</button><button onClick={() => setPrompt("Create a 30-day social content plan for Gen Z")}>Social strategy</button><button onClick={() => setPrompt("Find an authentic creator for our wellness campaign")}>Find creators</button></div><Button kind="accent" icon="spark" onClick={() => setGenerated(true)}>Build my strategy</Button></div>
+        <textarea
+          value={prompt}
+          onChange={e => {
+            setPrompt(e.target.value);
+            if (error) setError(null);
+          }}
+          disabled={loading}
+          placeholder="Describe your product, audience and what you want to create..."
+        />
+        <div className="composer-footer">
+          <div className="prompt-chips">
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => {
+                setPrompt("Launch campaign for our new adaptogenic sparkling water");
+                if (error) setError(null);
+              }}
+            >
+              Product launch
+            </button>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => {
+                setPrompt("Create a 30-day social content plan for Gen Z");
+                if (error) setError(null);
+              }}
+            >
+              Social strategy
+            </button>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => {
+                setPrompt("Find an authentic creator for our wellness campaign");
+                if (error) setError(null);
+              }}
+            >
+              Find creators
+            </button>
+          </div>
+          <Button
+            kind="accent"
+            icon={loading ? undefined : "spark"}
+            disabled={loading}
+            onClick={handleBuildStrategy}
+          >
+            {loading ? "Analyzing campaign..." : "Build my strategy"}
+          </Button>
+        </div>
+        {error && (
+          <div className="auth-alert error" role="alert" style={{ marginTop: 14, marginBottom: 0 }}>
+            {error}
+          </div>
+        )}
       </section>
-      {generated ? <StrategyReport goCreators={goCreators} /> : <DashboardOverview goCreators={goCreators} />}
+      {analysis ? <StrategyReport data={analysis} goCreators={goCreators} /> : <DashboardOverview goCreators={goCreators} />}
     </div>
   </>;
 }
@@ -743,16 +820,165 @@ function DashboardOverview({ goCreators }: { goCreators: () => void }) {
   </>;
 }
 
-function StrategyReport({ goCreators }: { goCreators: () => void }) {
-  return <section className="strategy">
-    <div className="strategy-head"><div><span className="success-pill"><Icon name="check" size={13}/> STRATEGY READY</span><h2>Adaptogenic hydration launch</h2><p>A creator-led content system designed for discovery, trust and conversion.</p></div><Button kind="light">Export brief</Button></div>
-    <div className="strategy-grid">
-      <div className="strategy-card"><span className="number">01</span><Icon name="users"/><h3>Audience angle</h3><p>Lead with the 3pm energy dip. Position the product as a calm, credible ritual—not another quick fix.</p><div className="tag-row"><span>Gen Z wellness</span><span>Young professionals</span></div></div>
-      <div className="strategy-card lilac"><span className="number">02</span><Icon name="video"/><h3>Content system</h3><p>Build a 3-part vertical series: problem-aware hook, creator routine, and 7-day honest review.</p><div className="tag-row"><span>9:16 video</span><span>15–30 sec</span></div></div>
-      <div className="strategy-card peach"><span className="number">03</span><Icon name="spark"/><h3>Creative direction</h3><p>Natural morning light, tactile product moments and quiet confidence. Avoid over-polished studio tropes.</p><div className="tag-row"><span>Candid</span><span>Warm minimal</span></div></div>
-    </div>
-    <div className="creator-cta"><div className="cta-icon"><Icon name="users" size={24}/></div><div><span>NEXT BEST ACTION</span><h3>Find the right voices for this campaign</h3><p>We found 18 creators with audience, style and performance fit.</p></div><Button icon="arrow" onClick={goCreators}>See creator shortlist</Button></div>
-  </section>;
+function StrategyReport({ data, goCreators }: { data?: CampaignAnalysis | null; goCreators: () => void }) {
+  const objective = data?.objective || "Adaptogenic hydration launch";
+  const visualStyle = data?.visual_style || "Natural morning light, tactile product moments and quiet confidence.";
+  const mood = data?.mood ? `Mood: ${data.mood}` : "";
+  const subtitle = data?.visual_style
+    ? `A creator-led content system designed for discovery, trust and conversion. Visual direction: ${data.visual_style}.`
+    : "A creator-led content system designed for discovery, trust and conversion.";
+
+  const audienceText =
+    data?.target_audience ||
+    "Lead with the 3pm energy dip. Position the product as a calm, credible ritual—not another quick fix.";
+
+  const audienceTags =
+    data?.keywords && data.keywords.length > 0
+      ? data.keywords.slice(0, 4)
+      : ["Gen Z wellness", "Young professionals"];
+
+  const contentFormatSummary = [
+    data?.content_type ? `Format: ${data.content_type}` : null,
+    data?.platform ? `Platform: ${data.platform}` : null,
+    data?.aspect_ratio ? `Aspect ratio: ${data.aspect_ratio}` : null,
+    data?.duration_seconds ? `Duration: ${data.duration_seconds}s` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const contentSystemText =
+    contentFormatSummary ||
+    "Build a 3-part vertical series: problem-aware hook, creator routine, and 7-day honest review.";
+
+  const contentTags: string[] = [];
+  if (data?.aspect_ratio) contentTags.push(data.aspect_ratio);
+  if (data?.duration_seconds) contentTags.push(`${data.duration_seconds} sec`);
+  if (data?.platform) contentTags.push(data.platform);
+  if (data?.content_type && !contentTags.includes(data.content_type)) contentTags.push(data.content_type);
+  if (contentTags.length === 0) {
+    contentTags.push("9:16 video", "15–30 sec");
+  }
+
+  const creativeDirectionText =
+    [visualStyle, mood].filter(Boolean).join(". ") ||
+    "Natural morning light, tactile product moments and quiet confidence. Avoid over-polished studio tropes.";
+
+  const creativeTags: string[] = [
+    ...(data?.required_skills || []),
+    ...(data?.preferred_tools || []),
+  ].slice(0, 4);
+  if (creativeTags.length === 0) {
+    creativeTags.push("Candid", "Warm minimal");
+  }
+
+  const missingInfo = data?.missing_information?.filter(Boolean) || [];
+
+  return (
+    <section className="strategy">
+      <div className="strategy-head">
+        <div>
+          <span className="success-pill">
+            <Icon name="check" size={13} /> STRATEGY READY
+          </span>
+          <h2>{objective}</h2>
+          <p>{subtitle}</p>
+        </div>
+        <Button kind="light">Export brief</Button>
+      </div>
+      <div className="strategy-grid">
+        <div className="strategy-card">
+          <span className="number">01</span>
+          <Icon name="users" />
+          <h3>Audience angle</h3>
+          <p>{audienceText}</p>
+          <div className="tag-row">
+            {audienceTags.map((tag) => (
+              <span key={tag}>{tag}</span>
+            ))}
+          </div>
+        </div>
+        <div className="strategy-card lilac">
+          <span className="number">02</span>
+          <Icon name="video" />
+          <h3>Content system</h3>
+          <p>{contentSystemText}</p>
+          <div className="tag-row">
+            {contentTags.map((tag) => (
+              <span key={tag}>{tag}</span>
+            ))}
+          </div>
+        </div>
+        <div className="strategy-card peach">
+          <span className="number">03</span>
+          <Icon name="spark" />
+          <h3>Creative direction</h3>
+          <p>{creativeDirectionText}</p>
+          <div className="tag-row">
+            {creativeTags.map((tag) => (
+              <span key={tag}>{tag}</span>
+            ))}
+          </div>
+        </div>
+      </div>
+      {missingInfo.length > 0 && (
+        <div
+          style={{
+            background: "#fff",
+            borderLeft: "1px solid var(--line)",
+            borderRight: "1px solid var(--line)",
+            borderBottom: "1px solid var(--line)",
+            padding: "16px 25px",
+            display: "flex",
+            alignItems: "center",
+            gap: "12px",
+            flexWrap: "wrap",
+          }}
+        >
+          <span
+            style={{
+              fontSize: "9px",
+              fontWeight: 700,
+              letterSpacing: "1px",
+              color: "#8a8d86",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+            }}
+          >
+            <Icon name="spark" size={14} /> RECOMMENDED BRIEF DETAILS:
+          </span>
+          <div className="tag-row" style={{ marginTop: 0 }}>
+            {missingInfo.map((info) => (
+              <span
+                key={info}
+                style={{
+                  background: "#fff5ee",
+                  borderColor: "#ffd7c2",
+                  color: "#8a4b2d",
+                  fontSize: "9px",
+                }}
+              >
+                + Specify {info}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="creator-cta">
+        <div className="cta-icon">
+          <Icon name="users" size={24} />
+        </div>
+        <div>
+          <span>NEXT BEST ACTION</span>
+          <h3>Find the right voices for this campaign</h3>
+          <p>We found 18 creators with audience, style and performance fit.</p>
+        </div>
+        <Button icon="arrow" onClick={goCreators}>
+          See creator shortlist
+        </Button>
+      </div>
+    </section>
+  );
 }
 
 function Projects() {
