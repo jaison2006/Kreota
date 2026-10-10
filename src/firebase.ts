@@ -28,6 +28,7 @@ if (import.meta.env.VITE_FIREBASE_EMULATORS) {
 }
 
 // Analytics throws in browsers without IndexedDB/cookies (some private windows), so only start it where supported.
-export const analytics: Promise<Analytics | null> = isSupported()
+// Emulator runs are test traffic, so they never report to the real Analytics property.
+export const analytics: Promise<Analytics | null> = import.meta.env.VITE_FIREBASE_EMULATORS ? Promise.resolve(null) : isSupported()
   .then((ok) => (ok ? getAnalytics(app) : null))
   .catch(() => null);

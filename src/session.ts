@@ -31,6 +31,10 @@ export interface Profile {
   creator?: FormValues;
   createdAt: number;
   lastLoginAt: number;
+  /** Demo-directory ids this person has saved, invited or flagged, with the time they did it. */
+  shortlist?: Record<string, number>;
+  invites?: Record<string, number>;
+  interested?: Record<string, number>;
 }
 
 export type Session =
@@ -143,6 +147,10 @@ export const setRole = (uid: string, role: Role) => update(userRef(uid), { role 
 /** Saves one onboarding step so progress survives a reload. */
 export const saveOnboardingStep = (uid: string, role: Role, values: FormValues) =>
   update(userRef(uid), Object.fromEntries(Object.entries(values).map(([k, v]) => [`${role}/${k}`, v])));
+
+/** Adds or removes a demo creator/brief id from one of the person's lists. */
+export const setListed = (uid: string, list: "shortlist" | "invites" | "interested", id: string, on: boolean) =>
+  update(userRef(uid), { [`${list}/${id}`]: on ? serverTimestamp() : null });
 
 /** Saves edits made on the profile page. */
 export const saveProfileFields = (uid: string, role: Role, values: FormValues) =>
