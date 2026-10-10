@@ -1,0 +1,51 @@
+{
+  "rules": {
+    "users": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    },
+    "directory": {
+      ".read": "auth != null",
+      "$uid": {
+        ".write": "auth != null && auth.uid === $uid",
+        ".validate": "!newData.exists() || (newData.hasChildren(['name', 'updatedAt']) && newData.child('name').isString())"
+      }
+    },
+    "conversations": {
+      "$cid": {
+        ".read": "auth != null && data.child('members/' + auth.uid).exists()",
+        "members": {
+          ".write": "auth != null && !data.exists() && $cid.contains(auth.uid) && newData.child(auth.uid).val() === true"
+        },
+        "createdAt": {
+          ".write": "auth != null && newData.parent().child('members/' + auth.uid).exists()"
+        },
+        "updatedAt": {
+          ".write": "auth != null && newData.parent().child('members/' + auth.uid).exists()"
+        },
+        "lastMessage": {
+          ".write": "auth != null && newData.parent().child('members/' + auth.uid).exists()"
+        }
+      }
+    },
+    "messages": {
+      "$cid": {
+        ".read": "auth != null && root.child('conversations/' + $cid + '/members/' + auth.uid).exists()",
+        "$mid": {
+          ".write": "auth != null && !data.exists() && newData.child('senderId').val() === auth.uid && newData.parent().parent().parent().child('conversations/' + $cid + '/members/' + auth.uid).exists()",
+          ".validate": "newData.hasChildren(['senderId', 'text', 'at']) && newData.child('text').isString() && newData.child('text').val().length > 0 && newData.child('text').val().length <= 4000"
+        }
+      }
+    },
+    "userConversations": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        "$cid": {
+          ".write": "auth != null && $cid.contains(auth.uid) && $cid.contains($uid) && newData.parent().parent().parent().child('conversations/' + $cid + '/members/' + auth.uid).exists()"
+        }
+      }
+    }
+  }
+}

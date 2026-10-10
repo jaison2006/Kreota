@@ -6,6 +6,7 @@ import {
   saveProfileFields, signInWithGoogle, signOutUser, signUpWithEmail, updateDisplayName, useSession, type FormValues, type Profile, type Role,
 } from "./session";
 import { OPTIONS, ROLE_FIELDS, toLink, type FieldSection } from "./profileFields";
+import { conversationId, markRead, openConversation, publishDirectoryEntry, sendMessage, useDirectory, useInbox, useMessages, type DirectoryEntry } from "./messaging";
 
 interface Account { user: User; profile: Profile }
 const AccountContext = createContext<Account | null>(null);
@@ -301,13 +302,14 @@ function Onboarding({ role }: { role: Role }) {
 }
 
 function Sidebar({ role, page, onPage, onSwitch }: { role: Role; page: string; onPage: (p: any) => void; onSwitch: () => void }) {
-  const { profile } = useAccount();
+  const { profile, user } = useAccount();
+  const unread = useInbox(user.uid).data.reduce((n, r) => n + (r.unread ?? 0), 0);
   const clientNav = [["home","home","AI workspace"],["creators","users","Discover creators"],["projects","brief","Projects"],["messages","chat","Messages"],["profile","users","My profile"]];
   const creatorNav = [["home","home","Overview"],["opportunities","brief","Opportunities"],["messages","chat","Messages"],["studio","spark","Kreota Studio"],["profile","users","My profile"]];
   const nav = role === "client" ? clientNav : creatorNav;
   return <aside className="sidebar">
     <Logo />
-    <nav>{nav.map(([id, icon, label]) => <button key={id} className={page === id ? "active" : ""} onClick={() => onPage(id)}><Icon name={icon} /><span>{label}</span>{id === "messages" && <i>3</i>}{id === "studio" && <small>AI</small>}</button>)}</nav>
+    <nav>{nav.map(([id, icon, label]) => <button key={id} className={page === id ? "active" : ""} onClick={() => onPage(id)}><Icon name={icon} /><span>{label}</span>{id === "messages" && unread > 0 && <i aria-label={`${unread} unread`}>{unread > 99 ? "99+" : unread}</i>}{id === "studio" && <small>AI</small>}</button>)}</nav>
     <div className="sidebar-bottom">
       <div className="switcher"><Avatar profile={profile} role={role} /><div><b>{profile.name}</b><span>{workspaceLabel(profile, role)}</span></div><button className="sidebar-signout" onClick={() => signOutUser()} title="Sign out" aria-label="Sign out"><Icon name="logout" size={16} /></button></div>
       <button className="switch-role" onClick={onSwitch}>Switch to {role === "client" ? "creator" : "client"} workspace <Icon name="arrow" size={14} /></button>
@@ -451,14 +453,244 @@ function Opportunities() {
   </>;
 }
 
+function shortTime(at?: number) {
+  if (!at) return "";
+  const d = new Date(at);
+  const now = new Date();
+  const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = (day(now) - day(d)) / 86400000;
+  if (diff === 0) return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (diff === 1) return "Yesterday";
+  if (diff < 7) return d.toLocaleDateString(undefined, { weekday: "short" });
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+
+function dayLabel(at: number) {
+  const d = new Date(at);
+  const today = new Date();
+  const y = new Date(); y.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return "Today";
+  if (d.toDateString() === y.toDateString()) return "Yesterday";
+  return d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+}
+
+function PersonAvatar({ entry, size = 40 }: { entry?: DirectoryEntry; size?: number }) {
+  const name = entry?.name ?? "Kreota member";
+  const tone = entry?.roles.includes("creator") && !entry.roles.includes("client") ? "creator" : "client";
+  return entry?.photoURL
+    ? <img className="msg-avatar" style={{ width: size, height: size }} src={entry.photoURL} alt="" referrerPolicy="no-referrer" />
+    : <span className={`msg-avatar ${tone}`} style={{ width: size, height: size }}>{initials(name)}</span>;
+}
+
+const roleText = (e?: DirectoryEntry) => (e ? e.roles.map((r) => (r === "creator" ? "Creator" : "Client")).join(" · ") : "");
+
 function Messages() {
-  const [messages,setMessages]=useState(["Hi Maya — the team loved your direction. The natural morning light feels exactly right.","Amazing. I’ll preserve that tone and share the first cut by Thursday."]);
-  const [draft,setDraft]=useState("");
-  const send=()=>{if(draft.trim()){setMessages([...messages,draft]);setDraft("");}};
-  return <><Topbar title="Messages" subtitle="Keep every creative conversation in context."/><div className="messages-layout">
-    <aside className="conversation-list"><div className="search-box"><Icon name="search"/><input placeholder="Search conversations"/></div>{creators.slice(0,3).map((c,i)=><button className={i===0?"active":""} key={c.name}><img src={c.photo} alt=""/><div><b>{i===0?"Northstar Labs":c.name}</b><span>{i===0?"The team loved your direction...":"Shared a project update"}</span></div><time>{i===0?"2m":"1d"}</time></button>)}</aside>
-    <section className="chat-window"><header><div className="chat-person"><div className="user-avatar client">N</div><div><b>Northstar Labs</b><span><i/> Active now</span></div></div><div><button className="icon-btn"><Icon name="video"/></button><button className="icon-btn"><Icon name="more"/></button></div></header><div className="project-context"><Icon name="brief"/><div><span>PROJECT</span><b>Summer Reset Campaign</b></div><em>In progress</em></div><div className="chat-body"><div className="date-line">TODAY</div>{messages.map((m,i)=><div className={`bubble ${i%2?"mine":""}`} key={i}>{m}<time>{i%2?"10:34 AM":"10:28 AM"}</time></div>)}</div><div className="chat-input"><button><Icon name="plus"/></button><input value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&send()} placeholder="Write a message..."/><button className="send-btn" onClick={send}><Icon name="send" size={17}/></button></div></section>
-  </div></>;
+  const { user } = useAccount();
+  const me = user.uid;
+  const inbox = useInbox(me);
+  const directory = useDirectory();
+  const people = new Map(directory.data.map((d) => [d.uid, d]));
+  const [active, setActive] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
+  const [search, setSearch] = useState("");
+  const [error, setError] = useState("");
+
+  const rows = inbox.data.filter((r) => {
+    if (!search.trim()) return true;
+    const p = people.get(r.with);
+    return `${p?.name ?? ""} ${p?.headline ?? ""} ${r.lastText ?? ""}`.toLowerCase().includes(search.trim().toLowerCase());
+  });
+  const activeRow = inbox.data.find((r) => r.cid === active);
+
+  const startWith = async (other: string) => {
+    setError("");
+    try {
+      const cid = await openConversation(me, other, inbox.data.some((r) => r.cid === conversationId(me, other)));
+      setActive(cid);
+      setPicking(false);
+    } catch (e) {
+      setError(describeError(e));
+    }
+  };
+
+  const blocked = inbox.error === "permission" || directory.error === "permission";
+
+  return <>
+    <Topbar title="Messages" subtitle="Talk directly with clients and creators on Kreota." />
+    <div className={`msg-layout${active || picking ? " has-active" : ""}`}>
+      <aside className="msg-list" aria-label="Conversations">
+        <div className="msg-list-head">
+          <div className="search-box"><Icon name="search" /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search conversations" aria-label="Search conversations" /></div>
+          <button className="button dark sm" onClick={() => { setPicking(true); setActive(null); }}><Icon name="plus" size={15} /> New</button>
+        </div>
+        {inbox.loading ? (
+          <div className="msg-loading"><span className="splash-spinner" /></div>
+        ) : rows.length ? (
+          <div className="msg-rows">
+            {rows.map((r) => {
+              const p = people.get(r.with);
+              return (
+                <button key={r.cid} className={`msg-row${active === r.cid ? " active" : ""}${r.unread ? " unread" : ""}`} onClick={() => { setActive(r.cid); setPicking(false); }}>
+                  <PersonAvatar entry={p} />
+                  <div className="msg-row-text">
+                    <b>{p?.name ?? "Kreota member"}</b>
+                    <span>{r.lastText ? `${r.lastSender === me ? "You: " : ""}${r.lastText}` : "No messages yet — say hello"}</span>
+                  </div>
+                  <div className="msg-row-meta">
+                    <time>{shortTime(r.lastAt ?? r.updatedAt)}</time>
+                    {!!r.unread && <i aria-label={`${r.unread} unread`}>{r.unread > 99 ? "99+" : r.unread}</i>}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="msg-empty">
+            <Icon name="chat" size={26} />
+            <b>{search ? "No matches" : "No conversations yet"}</b>
+            <p>{search ? "Try a different name." : "Start a conversation with a creator or brand on Kreota."}</p>
+            {!search && <button className="button dark sm" onClick={() => setPicking(true)}><Icon name="plus" size={15} /> New message</button>}
+          </div>
+        )}
+      </aside>
+
+      <section className="msg-main">
+        {blocked ? (
+          <div className="msg-empty"><Icon name="chat" size={26} /><b>Messaging is waiting for database rules</b><p>The Realtime Database rules need the messaging section before conversations can load.</p></div>
+        ) : picking ? (
+          <PeoplePicker people={directory.data.filter((d) => d.uid !== me)} loading={directory.loading} onPick={startWith} onBack={() => setPicking(false)} error={error} />
+        ) : active ? (
+          <Chat key={active} cid={active} other={people.get(activeRow?.with ?? "")} otherId={activeRow?.with ?? ""} unread={activeRow?.unread ?? 0} onBack={() => setActive(null)} />
+        ) : (
+          <div className="msg-empty"><Icon name="chat" size={30} /><b>Your conversations</b><p>Pick a conversation, or start a new one.</p></div>
+        )}
+      </section>
+    </div>
+  </>;
+}
+
+function PeoplePicker({ people, loading, onPick, onBack, error }: { people: DirectoryEntry[]; loading: boolean; onPick: (uid: string) => void; onBack: () => void; error: string }) {
+  const [q, setQ] = useState("");
+  const [filter, setFilter] = useState<"all" | Role>("all");
+  const [busy, setBusy] = useState<string | null>(null);
+  const list = people
+    .filter((p) => filter === "all" || p.roles.includes(filter))
+    .filter((p) => `${p.name} ${p.headline}`.toLowerCase().includes(q.trim().toLowerCase()))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return (
+    <div className="msg-picker">
+      <header className="msg-chat-head">
+        <button className="icon-btn msg-back" onClick={onBack} aria-label="Back to conversations"><Icon name="arrow" /></button>
+        <div><b>New message</b><span>Choose who to talk to</span></div>
+      </header>
+      <div className="msg-picker-tools">
+        <div className="search-box"><Icon name="search" /><input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search people and brands" aria-label="Search people" /></div>
+        <div className="msg-tabs" role="tablist">
+          {([["all", "Everyone"], ["creator", "Creators"], ["client", "Clients"]] as const).map(([id, label]) => (
+            <button key={id} role="tab" aria-selected={filter === id} className={filter === id ? "on" : ""} onClick={() => setFilter(id)}>{label}</button>
+          ))}
+        </div>
+      </div>
+      {error && <div className="auth-alert error" role="alert">{error}</div>}
+      <div className="msg-people">
+        {loading ? <div className="msg-loading"><span className="splash-spinner" /></div>
+          : list.length ? list.map((p) => (
+            <button key={p.uid} className="msg-person" disabled={!!busy} onClick={() => { setBusy(p.uid); Promise.resolve(onPick(p.uid)).finally(() => setBusy(null)); }}>
+              <PersonAvatar entry={p} size={44} />
+              <div><b>{p.name}</b><span>{p.headline || roleText(p) || "Kreota member"}</span></div>
+              <small>{busy === p.uid ? "Opening…" : roleText(p)}</small>
+            </button>
+          ))
+          : <div className="msg-empty small"><b>No one found</b><p>{people.length ? "Try another search." : "Nobody else has joined Kreota yet. Invite a creator or brand to sign up."}</p></div>}
+      </div>
+    </div>
+  );
+}
+
+function Chat({ cid, other, otherId, unread, onBack }: { cid: string; other?: DirectoryEntry; otherId: string; unread: number; onBack: () => void }) {
+  const { user } = useAccount();
+  const me = user.uid;
+  const msgs = useMessages(cid);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const listRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Opening a conversation (or receiving while it's open) clears its unread count.
+  useEffect(() => {
+    if (unread > 0 && document.visibilityState === "visible") markRead(me, cid).catch(() => {});
+  }, [unread, me, cid, msgs.data.length]);
+
+  useEffect(() => {
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [msgs.data.length, cid]);
+
+  useEffect(() => { inputRef.current?.focus(); }, [cid]);
+
+  const send = async () => {
+    const text = draft.trim();
+    if (!text || sending || !otherId) return;
+    setSending(true);
+    setError("");
+    setDraft("");
+    try {
+      await sendMessage(cid, me, otherId, text);
+    } catch (e) {
+      setDraft(text);
+      setError(describeError(e));
+    } finally {
+      setSending(false);
+      inputRef.current?.focus();
+    }
+  };
+
+  let lastDay = "";
+  return (
+    <div className="msg-chat">
+      <header className="msg-chat-head">
+        <button className="icon-btn msg-back" onClick={onBack} aria-label="Back to conversations"><Icon name="arrow" /></button>
+        <PersonAvatar entry={other} />
+        <div><b>{other?.name ?? "Kreota member"}</b><span>{[roleText(other), other?.headline].filter(Boolean).join(" · ") || "Kreota member"}</span></div>
+      </header>
+      <div className="msg-thread" ref={listRef} aria-live="polite">
+        {msgs.loading ? <div className="msg-loading"><span className="splash-spinner" /></div>
+          : !msgs.data.length ? <div className="msg-empty small"><b>Start the conversation</b><p>Introduce yourself and what you'd like to create together.</p></div>
+          : msgs.data.map((m, i) => {
+            const label = m.at ? dayLabel(m.at) : "";
+            const showDay = label && label !== lastDay;
+            if (showDay) lastDay = label;
+            const mine = m.senderId === me;
+            const next = msgs.data[i + 1];
+            const tail = !next || next.senderId !== m.senderId || (next.at ?? 0) - (m.at ?? 0) > 5 * 60000;
+            return (
+              <div key={m.id} className="msg-item">
+                {showDay && <div className="msg-day"><span>{label}</span></div>}
+                <div className={`msg-bubble${mine ? " mine" : ""}${tail ? " tail" : ""}`}>
+                  <p>{m.text}</p>
+                  {tail && <time>{m.at ? new Date(m.at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : ""}</time>}
+                </div>
+              </div>
+            );
+          })}
+      </div>
+      {error && <div className="auth-alert error msg-error" role="alert">{error}</div>}
+      <form className="msg-composer" onSubmit={(e) => { e.preventDefault(); send(); }}>
+        <textarea
+          ref={inputRef}
+          value={draft}
+          rows={1}
+          maxLength={4000}
+          placeholder={`Message ${other?.name?.split(" ")[0] ?? ""}…`}
+          aria-label="Message"
+          onChange={(e) => { setDraft(e.target.value); e.target.style.height = "auto"; e.target.style.height = `${Math.min(e.target.scrollHeight, 140)}px`; }}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }}
+        />
+        <button type="submit" className="msg-send" disabled={!draft.trim() || sending} aria-label="Send message"><Icon name="send" size={18} /></button>
+      </form>
+    </div>
+  );
 }
 
 function ProfilePage() {
@@ -647,6 +879,8 @@ function AccountProblem({ message }: { message: string }) {
 
 export default function App() {
   const session = useSession();
+  const readyProfile = session.status === "signedIn" && session.profile?.role && session.profile.onboarded?.[session.profile.role] ? session.profile : null;
+  useEffect(() => { if (readyProfile) publishDirectoryEntry(readyProfile); }, [readyProfile]);
   if (session.status === "loading") return <Splash />;
   if (session.status === "signedOut") return <Auth />;
   const { user, profile, error } = session;
