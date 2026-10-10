@@ -1,8 +1,29 @@
-import { FormEvent, ReactNode, useState } from "react";
+import { createContext, FormEvent, ReactNode, useContext, useEffect, useRef, useState } from "react";
+import type { User } from "firebase/auth";
 import Studio from "./studio/Studio";
+import {
+  completeOnboarding, describeError, resendVerification, resetPassword, saveOnboardingStep, setRole, signInWithEmail,
+  signInWithGoogle, signOutUser, signUpWithEmail, useSession, type FormValues, type Profile, type Role,
+} from "./session";
 
-type Role = "client" | "creator";
-type Screen = "auth" | "role" | "onboarding" | "app";
+interface Account { user: User; profile: Profile }
+const AccountContext = createContext<Account | null>(null);
+const useAccount = () => {
+  const a = useContext(AccountContext);
+  if (!a) throw new Error("useAccount outside a signed-in screen");
+  return a;
+};
+
+const firstName = (p: Profile) => (p.name || "there").split(" ")[0];
+const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join("") || "K";
+const greeting = () => { const h = new Date().getHours(); return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; };
+const workspaceLabel = (p: Profile, role: Role) => (role === "client" ? (p.client?.brand as string) || "Client workspace" : (p.creator?.displayName as string) || "Creator workspace");
+
+function Avatar({ profile, role }: { profile: Profile; role: Role }) {
+  return profile.photoURL
+    ? <img className="user-avatar photo" src={profile.photoURL} alt="" referrerPolicy="no-referrer" />
+    : <div className={`user-avatar ${role}`}>{initials(profile.name)}</div>;
+}
 type ClientPage = "home" | "creators" | "projects" | "messages";
 type CreatorPage = "home" | "opportunities" | "messages" | "studio" | "profile";
 
@@ -56,9 +77,45 @@ function Button({ children, kind = "dark", icon, onClick, type = "button", class
   return <button type={type} className={`button ${kind} ${className}`} onClick={onClick}>{children}{icon && <Icon name={icon} size={16} />}</button>;
 }
 
-function Auth({ onContinue }: { onContinue: () => void }) {
+const GoogleMark = () => <svg viewBox="0 0 24 24" width="18" height="18"><path fill="#4285F4" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.8h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.3Z"/><path fill="#34A853" d="M12 22c2.7 0 5-.9 6.6-2.5L15.4 17c-.9.6-2 1-3.4 1a5.8 5.8 0 0 1-5.5-4H3.2v2.6A10 10 0 0 0 12 22Z"/><path fill="#FBBC05" d="M6.5 14a6 6 0 0 1 0-3.9V7.5H3.2a10 10 0 0 0 0 9.1L6.5 14Z"/><path fill="#EA4335" d="M12 6.1c1.5 0 2.8.5 3.8 1.5l2.9-2.8A9.7 9.7 0 0 0 3.2 7.5l3.3 2.6A5.8 5.8 0 0 1 12 6Z"/></svg>;
+
+function Auth() {
   const [mode, setMode] = useState<"signup" | "login">("signup");
-  const submit = (e: FormEvent) => { e.preventDefault(); onContinue(); };
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [busy, setBusy] = useState<"" | "google" | "email" | "reset">("");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [touched, setTouched] = useState(false);
+
+  const signup = mode === "signup";
+  const invalid = {
+    name: signup && !name.trim() ? "Enter your name." : "",
+    email: !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) ? "Enter a valid email address." : "",
+    password: signup && password.length < 8 ? "Use at least 8 characters." : !password ? "Enter your password." : "",
+  };
+
+  const run = async (kind: "google" | "email" | "reset", action: () => Promise<void>) => {
+    setBusy(kind); setError(""); setNotice("");
+    try { await action(); } catch (e) { setError(describeError(e)); } finally { setBusy(""); }
+  };
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    setTouched(true);
+    if (invalid.name || invalid.email || invalid.password) return;
+    run("email", () => (signup ? signUpWithEmail(name.trim(), email.trim(), password) : signInWithEmail(email.trim(), password)));
+  };
+
+  const forgot = () => {
+    if (invalid.email) { setTouched(true); setError("Enter your email above, then choose “Forgot password”."); return; }
+    run("reset", async () => { await resetPassword(email.trim()); setNotice(`If an account exists for ${email.trim()}, a reset link is on its way.`); });
+  };
+
+  const switchMode = () => { setMode(signup ? "login" : "signup"); setError(""); setNotice(""); setTouched(false); };
+
   return (
     <main className="auth-shell">
       <section className="auth-story">
@@ -78,24 +135,44 @@ function Auth({ onContinue }: { onContinue: () => void }) {
       <section className="auth-panel">
         <div className="auth-card">
           <div className="mobile-logo"><Logo /></div>
-          <div className="auth-topline">NEW TO KREOTA? <button onClick={() => setMode(mode === "login" ? "signup" : "login")}>{mode === "login" ? "Create account" : "Sign in"}</button></div>
+          <div className="auth-topline">{signup ? "ALREADY ON KREOTA?" : "NEW TO KREOTA?"} <button onClick={switchMode}>{signup ? "Sign in" : "Create account"}</button></div>
           <div className="auth-heading">
             <div className="mini-mark"><Icon name="spark" /></div>
-            <h2>{mode === "signup" ? "Create your account" : "Welcome back"}</h2>
-            <p>{mode === "signup" ? "Start creating work people remember." : "Continue where your best work left off."}</p>
+            <h2>{signup ? "Create your account" : "Welcome back"}</h2>
+            <p>{signup ? "Start creating work people remember." : "Continue where your best work left off."}</p>
           </div>
-          <Button kind="light" className="google" onClick={onContinue}>
-            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="#4285F4" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.8h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.3Z"/><path fill="#34A853" d="M12 22c2.7 0 5-.9 6.6-2.5L15.4 17c-.9.6-2 1-3.4 1a5.8 5.8 0 0 1-5.5-4H3.2v2.6A10 10 0 0 0 12 22Z"/><path fill="#FBBC05" d="M6.5 14a6 6 0 0 1 0-3.9V7.5H3.2a10 10 0 0 0 0 9.1L6.5 14Z"/><path fill="#EA4335" d="M12 6.1c1.5 0 2.8.5 3.8 1.5l2.9-2.8A9.7 9.7 0 0 0 3.2 7.5l3.3 2.6A5.8 5.8 0 0 1 12 6Z"/></svg>
-            Continue with Google
-          </Button>
+          {error && <div className="auth-alert error" role="alert">{error}</div>}
+          {notice && <div className="auth-alert" role="status">{notice}</div>}
+          <button type="button" className="button light google" onClick={() => run("google", signInWithGoogle)} disabled={!!busy}>
+            <GoogleMark />
+            {busy === "google" ? "Opening Google…" : "Continue with Google"}
+          </button>
           <div className="divider"><span>or continue with email</span></div>
-          <form onSubmit={submit}>
-            {mode === "signup" && <label>Full name<input required placeholder="Alex Morgan" /></label>}
-            <label>Work email<input required type="email" placeholder="alex@company.com" /></label>
-            <label>Password<div className="password"><input required type="password" placeholder="At least 8 characters" /><span>Show</span></div></label>
-            <Button type="submit" icon="arrow" className="full">{mode === "signup" ? "Create account" : "Sign in"}</Button>
+          <form onSubmit={submit} noValidate>
+            {signup && (
+              <label>Full name
+                <input value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" placeholder="Alex Morgan" aria-invalid={touched && !!invalid.name} />
+                {touched && invalid.name && <small className="field-error">{invalid.name}</small>}
+              </label>
+            )}
+            <label>Email
+              <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" autoComplete="email" placeholder="alex@company.com" aria-invalid={touched && !!invalid.email} />
+              {touched && invalid.email && <small className="field-error">{invalid.email}</small>}
+            </label>
+            <label>Password
+              <div className="password">
+                <input value={password} onChange={(e) => setPassword(e.target.value)} type={showPassword ? "text" : "password"} autoComplete={signup ? "new-password" : "current-password"} placeholder={signup ? "At least 8 characters" : "Your password"} aria-invalid={touched && !!invalid.password} />
+                <button type="button" onClick={() => setShowPassword((v) => !v)} aria-label={showPassword ? "Hide password" : "Show password"}>{showPassword ? "Hide" : "Show"}</button>
+              </div>
+              {touched && invalid.password && <small className="field-error">{invalid.password}</small>}
+            </label>
+            {!signup && <button type="button" className="forgot-link" onClick={forgot} disabled={!!busy}>{busy === "reset" ? "Sending…" : "Forgot password?"}</button>}
+            <button type="submit" className="button dark full" disabled={!!busy}>
+              {busy === "email" ? (signup ? "Creating account…" : "Signing in…") : signup ? "Create account" : "Sign in"}
+              {!busy && <Icon name="arrow" size={16} />}
+            </button>
           </form>
-          <p className="terms">By continuing, you agree to Kreota’s <u>Terms</u> and <u>Privacy Policy</u>.</p>
+          <p className="terms">By continuing, you agree to Kreota’s <u>Terms</u> and <u>Privacy Policy</u>. You’ll stay signed in on this device until you sign out.</p>
         </div>
       </section>
     </main>
@@ -103,9 +180,10 @@ function Auth({ onContinue }: { onContinue: () => void }) {
 }
 
 function RoleSelect({ onSelect }: { onSelect: (r: Role) => void }) {
+  const { user } = useAccount();
   return (
     <main className="setup-shell">
-      <header><Logo /><div className="setup-step">STEP 1 OF 2</div></header>
+      <header><Logo /><div className="setup-step">STEP 1 OF 2</div><SignedInAs email={user.email} /></header>
       <section className="role-wrap">
         <div className="eyebrow"><span /> PERSONALIZE YOUR EXPERIENCE</div>
         <h1>How will you use Kreota?</h1>
@@ -126,14 +204,50 @@ function RoleSelect({ onSelect }: { onSelect: (r: Role) => void }) {
   );
 }
 
-function Onboarding({ role, onDone }: { role: Role; onDone: () => void }) {
+function SignedInAs({ email }: { email: string | null }) {
+  return <div className="signed-in-as"><span>{email}</span><button onClick={() => signOutUser()}>Sign out</button></div>;
+}
+
+function Onboarding({ role }: { role: Role }) {
+  const { user, profile } = useAccount();
   const [step, setStep] = useState(1);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [resent, setResent] = useState(false);
   const creator = role === "creator";
-  const next = (e: FormEvent) => { e.preventDefault(); if (step < 3) setStep(step + 1); else onDone(); };
+  const other: Role = creator ? "client" : "creator";
+  const saved = profile[role] ?? {};
+  const v = (key: string, fallback = "") => (typeof saved[key] === "string" ? (saved[key] as string) : fallback);
+
+  const next = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const values: FormValues = {};
+    new FormData(form).forEach((val, key) => { values[key] = typeof val === "string" ? val.trim() : ""; });
+    form.querySelectorAll<HTMLInputElement>("input[type=checkbox][name]").forEach((c) => { values[c.name] = c.checked; });
+    setSaving(true);
+    setError("");
+    try {
+      if (step < 3) { await saveOnboardingStep(user.uid, role, values); setStep(step + 1); }
+      else await completeOnboarding(user.uid, role, values);
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setSaving(false);
+    }
+  };
   const titles = creator ? ["Build your creator profile", "Show us your craft", "Verify your identity"] : ["Tell us about your brand", "Shape your creative needs", "Verify your business"];
   return (
     <main className="onboard-shell">
-      <header><Logo /><div className="step-dots">{[1,2,3].map(n => <span key={n} className={n <= step ? "active" : ""} />)}</div><span className="step-count">{step} / 3</span></header>
+      <header>
+        <Logo />
+        <div className="step-dots">{[1,2,3].map(n => <span key={n} className={n <= step ? "active" : ""} />)}</div>
+        <span className="step-count">{step} / 3</span>
+        <div className="onboard-exits">
+          {profile.onboarded?.[other] && <button onClick={() => setRole(user.uid, other)}>Back to {other} workspace</button>}
+          <button onClick={() => signOutUser()}>Sign out</button>
+        </div>
+      </header>
       <section className="onboard-content">
         <aside>
           <div className="eyebrow"><span /> {creator ? "CREATOR ONBOARDING" : "CLIENT ONBOARDING"}</div>
@@ -142,33 +256,43 @@ function Onboarding({ role, onDone }: { role: Role; onDone: () => void }) {
           <div className="onboard-list">
             {titles.map((t, i) => <div className={`${i + 1 === step ? "current" : ""} ${i + 1 < step ? "done" : ""}`} key={t}><b>{i + 1 < step ? "✓" : `0${i + 1}`}</b><span>{t}</span></div>)}
           </div>
+          <p className="saved-note"><Icon name="check" size={13} /> Saved to your account as you go.</p>
         </aside>
-        <form className="onboard-form" onSubmit={next}>
+        <form className="onboard-form" onSubmit={next} key={step}>
+          {error && <div className="auth-alert error" role="alert">{error}</div>}
           {step === 1 && (creator ? <>
-            <div className="form-row"><label>Creator / display name<input required placeholder="e.g. Maya Creates" /></label><label>Based in<input required placeholder="City, country" /></label></div>
-            <label>Primary creator category<select><option>Video & UGC</option><option>Photography</option><option>Design & motion</option><option>Writing & strategy</option></select></label>
-            <label>Short bio<textarea placeholder="Tell brands what makes your work distinctive..." /></label>
-            <div className="form-row"><label>Instagram / TikTok<input placeholder="@yourhandle" /></label><label>Portfolio URL<input placeholder="https://" /></label></div>
+            <div className="form-row"><label>Creator / display name<input name="displayName" required defaultValue={v("displayName", profile.name)} placeholder="e.g. Maya Creates" /></label><label>Based in<input name="location" required defaultValue={v("location")} placeholder="City, country" /></label></div>
+            <label>Primary creator category<select name="category" defaultValue={v("category", "Video & UGC")}><option>Video & UGC</option><option>Photography</option><option>Design & motion</option><option>Writing & strategy</option></select></label>
+            <label>Short bio<textarea name="bio" defaultValue={v("bio")} placeholder="Tell brands what makes your work distinctive..." /></label>
+            <div className="form-row"><label>Instagram / TikTok<input name="social" defaultValue={v("social")} placeholder="@yourhandle" /></label><label>Portfolio URL<input name="portfolio" defaultValue={v("portfolio")} placeholder="https://" /></label></div>
           </> : <>
-            <div className="form-row"><label>Brand name<input required placeholder="e.g. Northstar Labs" /></label><label>Company website<input required placeholder="https://" /></label></div>
-            <label>What does your brand do?<textarea placeholder="A short description of your product and audience..." /></label>
-            <div className="form-row"><label>Industry<select><option>Consumer technology</option><option>Beauty & wellness</option><option>Fashion</option><option>Food & beverage</option></select></label><label>Company size<select><option>1–10 people</option><option>11–50 people</option><option>51–200 people</option><option>200+ people</option></select></label></div>
+            <div className="form-row"><label>Brand name<input name="brand" required defaultValue={v("brand")} placeholder="e.g. Northstar Labs" /></label><label>Company website<input name="website" required defaultValue={v("website")} placeholder="https://" /></label></div>
+            <label>What does your brand do?<textarea name="description" defaultValue={v("description")} placeholder="A short description of your product and audience..." /></label>
+            <div className="form-row"><label>Industry<select name="industry" defaultValue={v("industry", "Consumer technology")}><option>Consumer technology</option><option>Beauty & wellness</option><option>Fashion</option><option>Food & beverage</option></select></label><label>Company size<select name="size" defaultValue={v("size", "1–10 people")}><option>1–10 people</option><option>11–50 people</option><option>51–200 people</option><option>200+ people</option></select></label></div>
           </>)}
           {step === 2 && (creator ? <>
-            <label>Skills and specialties<input placeholder="UGC, direction, editing, beauty..." /></label>
-            <div className="form-row"><label>Typical project rate<select><option>$1,000 – $2,500</option><option>$500 – $1,000</option><option>$2,500 – $5,000</option></select></label><label>Weekly availability<select><option>20+ hours</option><option>10–20 hours</option><option>Under 10 hours</option></select></label></div>
+            <label>Skills and specialties<input name="skills" defaultValue={v("skills")} placeholder="UGC, direction, editing, beauty..." /></label>
+            <div className="form-row"><label>Typical project rate<select name="rate" defaultValue={v("rate", "$1,000 – $2,500")}><option>$1,000 – $2,500</option><option>$500 – $1,000</option><option>$2,500 – $5,000</option></select></label><label>Weekly availability<select name="availability" defaultValue={v("availability", "20+ hours")}><option>20+ hours</option><option>10–20 hours</option><option>Under 10 hours</option></select></label></div>
             <label>Upload a recent project<div className="dropzone"><Icon name="upload" /><b>Drop files or browse</b><span>MP4, MOV, PNG up to 500MB</span></div></label>
           </> : <>
-            <label>Main content goal<select><option>Launch a new product</option><option>Build brand awareness</option><option>Drive conversions</option><option>Always-on social content</option></select></label>
-            <div className="form-row"><label>Monthly content budget<select><option>$5k – $15k</option><option>Under $5k</option><option>$15k – $50k</option><option>$50k+</option></select></label><label>Primary channels<select><option>TikTok & Instagram</option><option>YouTube</option><option>Paid social</option><option>Multi-channel</option></select></label></div>
-            <label>Brand tone<input placeholder="e.g. optimistic, intelligent, candid" /></label>
+            <label>Main content goal<select name="goal" defaultValue={v("goal", "Launch a new product")}><option>Launch a new product</option><option>Build brand awareness</option><option>Drive conversions</option><option>Always-on social content</option></select></label>
+            <div className="form-row"><label>Monthly content budget<select name="budget" defaultValue={v("budget", "$5k – $15k")}><option>$5k – $15k</option><option>Under $5k</option><option>$15k – $50k</option><option>$50k+</option></select></label><label>Primary channels<select name="channels" defaultValue={v("channels", "TikTok & Instagram")}><option>TikTok & Instagram</option><option>YouTube</option><option>Paid social</option><option>Multi-channel</option></select></label></div>
+            <label>Brand tone<input name="tone" defaultValue={v("tone")} placeholder="e.g. optimistic, intelligent, candid" /></label>
           </>)}
           {step === 3 && <>
-            <div className="verify-box"><div className="verify-icon"><Icon name="check" size={24} /></div><div><h3>{creator ? "Creator identity check" : "Business email verification"}</h3><p>{creator ? "Upload a valid ID and take a quick selfie. Your document is encrypted and never displayed." : "We’ll send a one-time code to your work email. Verified clients build trust with creators."}</p></div></div>
-            <label>{creator ? "Government-issued ID" : "Verification code"}<div className={creator ? "dropzone small" : ""}>{creator ? <><Icon name="upload" /><b>Upload ID</b><span>Passport or driver’s license</span></> : <input placeholder="Enter 6-digit code" />}</div></label>
-            <label className="checkline"><input type="checkbox" defaultChecked /> I confirm these details are accurate and agree to the marketplace guidelines.</label>
+            <div className="verify-box">
+              <div className="verify-icon"><Icon name="check" size={24} /></div>
+              <div>
+                <h3>{user.emailVerified ? "Email verified" : "Verify your email"}</h3>
+                <p>{user.emailVerified
+                  ? `${user.email} is confirmed. Verified accounts build trust across the marketplace.`
+                  : `We sent a verification link to ${user.email}. You can keep going and verify any time.`}</p>
+                {!user.emailVerified && <button type="button" className="text-button" onClick={() => resendVerification().then(() => setResent(true)).catch((err) => setError(describeError(err)))}>{resent ? "Link sent — check your inbox" : "Resend verification link"}</button>}
+              </div>
+            </div>
+            <label className="checkline"><input type="checkbox" name="agreed" required defaultChecked={saved.agreed === true} /> I confirm these details are accurate and agree to the marketplace guidelines.</label>
           </>}
-          <div className="form-actions">{step > 1 && <Button kind="ghost" onClick={() => setStep(step - 1)}>Back</Button>}<Button type="submit" icon="arrow">{step === 3 ? `Enter ${creator ? "creator" : "brand"} workspace` : "Continue"}</Button></div>
+          <div className="form-actions">{step > 1 && <Button kind="ghost" onClick={() => setStep(step - 1)}>Back</Button>}<button type="submit" className="button dark" disabled={saving}>{saving ? "Saving…" : step === 3 ? `Enter ${creator ? "creator" : "brand"} workspace` : "Continue"}{!saving && <Icon name="arrow" size={16} />}</button></div>
         </form>
       </section>
     </main>
@@ -176,6 +300,7 @@ function Onboarding({ role, onDone }: { role: Role; onDone: () => void }) {
 }
 
 function Sidebar({ role, page, onPage, onSwitch }: { role: Role; page: string; onPage: (p: any) => void; onSwitch: () => void }) {
+  const { profile } = useAccount();
   const clientNav = [["home","home","AI workspace"],["creators","users","Discover creators"],["projects","brief","Projects"],["messages","chat","Messages"]];
   const creatorNav = [["home","home","Overview"],["opportunities","brief","Opportunities"],["messages","chat","Messages"],["studio","spark","Kreota Studio"],["profile","users","My profile"]];
   const nav = role === "client" ? clientNav : creatorNav;
@@ -183,21 +308,51 @@ function Sidebar({ role, page, onPage, onSwitch }: { role: Role; page: string; o
     <Logo />
     <nav>{nav.map(([id, icon, label]) => <button key={id} className={page === id ? "active" : ""} onClick={() => onPage(id)}><Icon name={icon} /><span>{label}</span>{id === "messages" && <i>3</i>}{id === "studio" && <small>AI</small>}</button>)}</nav>
     <div className="sidebar-bottom">
-      <button className="switcher" onClick={onSwitch}><div className={`user-avatar ${role}`}>{role === "client" ? "A" : "MC"}</div><div><b>{role === "client" ? "Alex Morgan" : "Maya Chen"}</b><span>{role === "client" ? "Northstar Labs" : "Verified creator"}</span></div><Icon name="more" /></button>
-      <button className="switch-role" onClick={onSwitch}>Switch to {role === "client" ? "creator" : "client"} demo <Icon name="arrow" size={14} /></button>
+      <div className="switcher"><Avatar profile={profile} role={role} /><div><b>{profile.name}</b><span>{workspaceLabel(profile, role)}</span></div><button className="sidebar-signout" onClick={() => signOutUser()} title="Sign out" aria-label="Sign out"><Icon name="logout" size={16} /></button></div>
+      <button className="switch-role" onClick={onSwitch}>Switch to {role === "client" ? "creator" : "client"} workspace <Icon name="arrow" size={14} /></button>
     </div>
   </aside>;
 }
 
+const ShellContext = createContext<{ role: Role; onSwitch: () => void }>({ role: "client", onSwitch: () => {} });
+
+function AccountMenu() {
+  const { profile, user } = useAccount();
+  const { role, onSwitch } = useContext(ShellContext);
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", esc);
+    return () => { window.removeEventListener("pointerdown", close); window.removeEventListener("keydown", esc); };
+  }, [open]);
+  return (
+    <div className="account-menu" ref={ref}>
+      <button className="account-trigger" onClick={() => setOpen((v) => !v)} aria-haspopup="menu" aria-expanded={open} aria-label="Account menu"><Avatar profile={profile} role={role} /></button>
+      {open && (
+        <div className="account-pop" role="menu">
+          <div className="account-who"><b>{profile.name}</b><span>{user.email}</span></div>
+          <button role="menuitem" onClick={() => { setOpen(false); onSwitch(); }}><Icon name="users" size={16} /> Switch to {role === "client" ? "creator" : "client"} workspace</button>
+          <button role="menuitem" onClick={() => signOutUser()}><Icon name="logout" size={16} /> Sign out</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Topbar({ title, subtitle }: { title: string; subtitle?: string }) {
-  return <header className="topbar"><div><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div><div className="top-actions"><button className="icon-btn"><Icon name="search" /></button><button className="icon-btn badge"><Icon name="bell" /></button><div className="user-avatar client">A</div></div></header>;
+  return <header className="topbar"><div><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div><div className="top-actions"><button className="icon-btn" aria-label="Search"><Icon name="search" /></button><button className="icon-btn badge" aria-label="Notifications"><Icon name="bell" /></button><AccountMenu /></div></header>;
 }
 
 function ClientHome({ goCreators }: { goCreators: () => void }) {
+  const { profile } = useAccount();
   const [generated, setGenerated] = useState(false);
   const [prompt, setPrompt] = useState("");
   return <>
-    <Topbar title="Good morning, Alex." subtitle="What are we creating today?" />
+    <Topbar title={`${greeting()}, ${firstName(profile)}.`} subtitle="What are we creating today?" />
     <div className="page-content client-home">
       <section className="ai-composer">
         <div className="composer-label"><Icon name="spark" /><span>KREOTA INTELLIGENCE</span></div>
@@ -267,8 +422,9 @@ function Projects() {
 }
 
 function CreatorHome({ go }: { go: (p: CreatorPage) => void }) {
+  const { profile } = useAccount();
   return <>
-    <Topbar title="Welcome back, Maya." subtitle="Your creative business, in motion." />
+    <Topbar title={`Welcome back, ${firstName(profile)}.`} subtitle="Your creative business, in motion." />
     <div className="page-content">
       <section className="creator-welcome"><div><span className="success-pill">CREATOR PULSE</span><h2>You’re a top match for 6 new briefs.</h2><p>Your short-form wellness work is trending with verified brands this week.</p><Button kind="accent" icon="arrow" onClick={()=>go("opportunities")}>View opportunities</Button></div><div className="pulse-orbit"><div><b>94</b><span>PROFILE<br/>STRENGTH</span></div></div></section>
       <div className="metric-grid creator-metrics"><div className="metric-card"><span>THIS MONTH</span><b>$8,420</b><p><i>+24%</i> from last month</p></div><div className="metric-card lilac"><span>ACTIVE PROJECTS</span><b>03</b><p>1 deliverable due soon</p></div><div className="metric-card mint"><span>NEW INVITES</span><b>06</b><p>4 are high-match</p></div><div className="metric-card peach"><span>AVG. RATING</span><b>4.9</b><p>Across 38 projects</p></div></div>
@@ -308,6 +464,7 @@ function CreatorProfile() {
 }
 
 function AppShell({ role, onSwitch }: { role: Role; onSwitch: () => void }) {
+  const { user } = useAccount();
   const [clientPage,setClientPage]=useState<ClientPage>("home");
   const [creatorPage,setCreatorPage]=useState<CreatorPage>("home");
   const page=role==="client"?clientPage:creatorPage;
@@ -315,16 +472,40 @@ function AppShell({ role, onSwitch }: { role: Role; onSwitch: () => void }) {
   if(role==="client"){
     content=clientPage==="home"?<ClientHome goCreators={()=>setClientPage("creators")}/>:clientPage==="creators"?<CreatorMarketplace/>:clientPage==="projects"?<Projects/>:<Messages/>;
   } else {
-    content=creatorPage==="home"?<CreatorHome go={setCreatorPage}/>:creatorPage==="opportunities"?<Opportunities/>:creatorPage==="messages"?<Messages/>:creatorPage==="studio"?<Studio/>:<CreatorProfile/>;
+    content=creatorPage==="home"?<CreatorHome go={setCreatorPage}/>:creatorPage==="opportunities"?<Opportunities/>:creatorPage==="messages"?<Messages/>:creatorPage==="studio"?<Studio key={user.uid} userId={user.uid}/>:<CreatorProfile/>;
   }
-  return <div className="app-shell"><Sidebar role={role} page={page} onPage={role==="client"?setClientPage:setCreatorPage} onSwitch={onSwitch}/><main className="app-main">{content}</main></div>;
+  return <ShellContext.Provider value={{ role, onSwitch }}><div className="app-shell"><Sidebar role={role} page={page} onPage={role==="client"?setClientPage:setCreatorPage} onSwitch={onSwitch}/><main className="app-main">{content}</main></div></ShellContext.Provider>;
+}
+
+function Splash() {
+  return <main className="splash" aria-busy="true"><Logo /><span className="splash-spinner" aria-label="Loading" /></main>;
+}
+
+function AccountProblem({ message }: { message: string }) {
+  return (
+    <main className="splash">
+      <Logo />
+      <div className="splash-card" role="alert">
+        <h2>We couldn’t open your account</h2>
+        <p>{message}</p>
+        <div className="splash-actions"><Button kind="light" onClick={() => location.reload()}>Try again</Button><Button onClick={() => signOutUser()}>Sign out</Button></div>
+      </div>
+    </main>
+  );
 }
 
 export default function App() {
-  const [screen,setScreen]=useState<Screen>("auth");
-  const [role,setRole]=useState<Role>("client");
-  if(screen==="auth") return <Auth onContinue={()=>setScreen("role")}/>;
-  if(screen==="role") return <RoleSelect onSelect={(r)=>{setRole(r);setScreen("onboarding");}}/>;
-  if(screen==="onboarding") return <Onboarding role={role} onDone={()=>setScreen("app")}/>;
-  return <AppShell role={role} onSwitch={()=>setRole(role==="client"?"creator":"client")}/>;
+  const session = useSession();
+  if (session.status === "loading") return <Splash />;
+  if (session.status === "signedOut") return <Auth />;
+  const { user, profile, error } = session;
+  if (!profile) return error ? <AccountProblem message={error} /> : <Splash />;
+  const role = profile.role;
+  return (
+    <AccountContext.Provider value={{ user, profile }}>
+      {!role ? <RoleSelect onSelect={(r) => setRole(user.uid, r)} />
+        : !profile.onboarded?.[role] ? <Onboarding key={role} role={role} />
+        : <AppShell role={role} onSwitch={() => setRole(user.uid, role === "client" ? "creator" : "client")} />}
+    </AccountContext.Provider>
+  );
 }

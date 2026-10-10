@@ -142,13 +142,15 @@ export async function importFile(file: File): Promise<{ asset: Asset; file: File
 
 /* ---------- Persistence (IndexedDB) ---------- */
 
-const DB_NAME = "kreota-studio";
+let dbName = "kreota-studio";
+/** Keeps each signed-in account's projects separate on a shared device. */
+export const setStorageUser = (uid: string) => { dbName = `kreota-studio-${uid}`; };
 const ASSETS = "assets";
 const META = "meta";
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
+    const req = indexedDB.open(dbName, 1);
     req.onupgradeneeded = () => {
       req.result.createObjectStore(ASSETS);
       req.result.createObjectStore(META);

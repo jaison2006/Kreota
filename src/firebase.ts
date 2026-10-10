@@ -1,10 +1,13 @@
 import { initializeApp } from "firebase/app";
 import { getAnalytics, isSupported, type Analytics } from "firebase/analytics";
+import { getAuth } from "firebase/auth";
+import { getDatabase } from "firebase/database";
 
 // Firebase web config is public by design; access is controlled by Firebase security rules.
 const firebaseConfig = {
   apiKey: "AIzaSyBM7UX8EiYVdzGVm47f8j0t_SN5Ct90aAY",
   authDomain: "kreota-83c24.firebaseapp.com",
+  databaseURL: "https://kreota-83c24-default-rtdb.firebaseio.com",
   projectId: "kreota-83c24",
   storageBucket: "kreota-83c24.firebasestorage.app",
   messagingSenderId: "476926079982",
@@ -13,6 +16,10 @@ const firebaseConfig = {
 };
 
 export const app = initializeApp(firebaseConfig);
+
+// getAuth persists the session in IndexedDB, so users stay signed in on this device until they sign out.
+export const auth = getAuth(app);
+export const db = getDatabase(app);
 
 // Analytics throws in browsers without IndexedDB/cookies (some private windows), so only start it where supported.
 export const analytics: Promise<Analytics | null> = isSupported()

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as RPointerEvent } from "react";
 import { Engine, pickExportMime } from "./engine";
 import Icon from "./icons";
-import { deleteStoredAsset, downloadBlob, importFile, ImportError, loadSession, saveAsset, saveProject } from "./media";
+import { deleteStoredAsset, downloadBlob, importFile, ImportError, loadSession, saveAsset, saveProject, setStorageUser } from "./media";
 import { aspectSize, clamp, deleteSelection, duplicateSelection, FPS, formatTime, makeAudioClip, makeText, makeVisualClip, newProject, projectDuration, splitAt } from "./model";
 import { CaptionsPanel, MediaPanel, PropertiesPanel, SmartPanel, TextPanel, type PanelProps } from "./Panels";
 import Timeline from "./Timeline";
@@ -24,7 +24,8 @@ type ExportState =
   | { phase: "done"; url: string; blob: Blob; ext: string }
   | { phase: "error"; message: string };
 
-export default function Studio() {
+export default function Studio({ userId }: { userId: string }) {
+  setStorageUser(userId);
   const history = useHistory<Project>(newProject());
   const { value: project, set, checkpoint, settle, undo, redo, reset } = history;
   const [assets, setAssets] = useState<Map<string, Asset>>(new Map());
