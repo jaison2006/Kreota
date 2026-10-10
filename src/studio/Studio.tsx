@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as RPointerEvent } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as RPointerEvent } from "react";
 import { Engine, pickExportMime } from "./engine";
 import Icon from "./icons";
 import { deleteStoredAsset, downloadBlob, importFile, ImportError, loadSession, saveAsset, saveProject, setStorageUser } from "./media";
@@ -24,7 +24,8 @@ type ExportState =
   | { phase: "done"; url: string; blob: Blob; ext: string }
   | { phase: "error"; message: string };
 
-export default function Studio({ userId }: { userId: string }) {
+/** `toolbarExtras` lets the app shell place its search and notification buttons in Studio's own toolbar. */
+export default function Studio({ userId, toolbarExtras }: { userId: string; toolbarExtras?: ReactNode }) {
   setStorageUser(userId);
   const history = useHistory<Project>(newProject());
   const { value: project, set, checkpoint, settle, undo, redo, reset } = history;
@@ -329,6 +330,7 @@ export default function Studio({ userId }: { userId: string }) {
               </div>
             )}
           </div>
+          {toolbarExtras && <div className="ks-shell-actions">{toolbarExtras}</div>}
           <button className="ks-btn primary" onClick={() => setExporting({ phase: "setup" })} disabled={duration <= 0}><Icon name="download" size={16} /> Export</button>
         </div>
       </header>

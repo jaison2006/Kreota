@@ -2571,7 +2571,7 @@ function AppShell({ role, onSwitch }: { role: Role; onSwitch: () => void }) {
   if(role==="client"){
     content=clientPage==="home"?<ClientHome goCreators={()=>setClientPage("creators")} goProjects={()=>setClientPage("projects")}/>:clientPage==="creators"?<CreatorMarketplace goProjects={()=>setClientPage("projects")}/>:clientPage==="projects"?<Projects/>:clientPage==="profile"?<ProfilePage/>:<Messages/>;
   } else {
-    content=creatorPage==="home"?<CreatorHome go={setCreatorPage}/>:creatorPage==="opportunities"?<Opportunities/>:creatorPage==="messages"?<Messages/>:creatorPage==="studio"?<Studio key={user.uid} userId={user.uid}/>:<ProfilePage/>;
+    content=creatorPage==="home"?<CreatorHome go={setCreatorPage}/>:creatorPage==="opportunities"?<Opportunities/>:creatorPage==="messages"?<Messages/>:creatorPage==="studio"?<Studio key={user.uid} userId={user.uid} toolbarExtras={<><SearchButton /><NotificationsMenu /></>}/>:<ProfilePage/>;
   }
   return <ShellContext.Provider value={{ role, onSwitch, openProfile: () => go("profile"), openChat: (id) => { setPendingChat(id); go("messages"); }, pendingChat, clearPendingChat: () => setPendingChat(null), go, openFocus: (p, f) => { setFocus(f); go(p); }, focus, clearFocus: () => setFocus(null), openSearch: () => setSearching(true) }}><div className="app-shell"><Sidebar role={role} page={page} onPage={role==="client"?setClientPage:setCreatorPage} onSwitch={onSwitch}/><main className="app-main">{content}</main></div>{searching && <GlobalSearch onClose={() => setSearching(false)} />}</ShellContext.Provider>;
 }

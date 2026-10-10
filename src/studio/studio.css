@@ -271,3 +271,10 @@
   .ks-zoom input{width:80px}
   .ks-toast{position:fixed;top:auto;bottom:88px}
 }
+
+/* App search + notifications inside Studio's dark toolbar */
+.ks-shell-actions{display:flex;align-items:center;gap:4px;margin-left:4px;padding-left:8px;border-left:1px solid var(--k-line)}
+.ks-shell-actions .icon-btn{width:34px;height:34px;background:transparent;border-color:transparent;color:#c9c6bf}
+.ks-shell-actions .icon-btn:hover{background:var(--k-raise2);color:#fff}
+.ks-shell-actions .nt-count{border-color:var(--k-panel)}
+.ks-shell-actions .nt-pop{top:44px;color:var(--ink);font-size:14px}
