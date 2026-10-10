@@ -1,0 +1,10 @@
+{
+  "description": "Connects brands with AI-powered content creators through a professional marketplace offering project management, messaging, and AI video editing tools.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
