@@ -40,6 +40,8 @@ export interface Profile {
   seeded?: Record<string, boolean>;
   /** Client projects, keyed by project id. */
   projects?: Record<string, ClientProject>;
+  /** Notifications at or before this time count as read. */
+  notifSeenAt?: number;
   /** Saved AI workspace strategies, keyed by id. */
   strategies?: Record<string, SavedStrategy>;
 }
@@ -234,6 +236,8 @@ export async function seedSampleProject(uid: string, data: ProjectDraft) {
     [projectPath(uid, pid)]: { ...data, sample: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), milestones: { publishedAt: serverTimestamp() } },
   });
 }
+
+export const markNotificationsSeen = (uid: string) => update(userRef(uid), { notifSeenAt: serverTimestamp() });
 
 /* ---------- AI workspace strategies ---------- */
 

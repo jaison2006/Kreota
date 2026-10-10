@@ -1,6 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getAnalytics, isSupported, type Analytics } from "firebase/analytics";
-import { initializeAppCheck, ReCaptchaV3Provider, type AppCheck } from "firebase/app-check";
+import { initializeAppCheck, ReCaptchaEnterpriseProvider, type AppCheck } from "firebase/app-check";
 import { connectAuthEmulator, getAuth } from "firebase/auth";
 import { connectDatabaseEmulator, getDatabase } from "firebase/database";
 
@@ -20,10 +20,16 @@ export const app = initializeApp(firebaseConfig);
 
 /*
  * App Check proves requests come from this app; Firebase AI Logic (Gemini) rejects requests without it once enforced.
- * - Live site: set VITE_RECAPTCHA_SITE_KEY to a reCAPTCHA v3 site key registered under App Check in the Firebase console.
- * - On your own computer (localhost): a debug token is created once per browser; register it in the console to allow it.
+ *
+ * Provider: reCAPTCHA Enterprise. The key is created on Google Cloud's Fraud Defense page (score-based, no checkbox
+ * challenge) and registered for this web app under Firebase console → App Check, which stores the secret server-side.
+ * The browser only ever needs the public site key:
+ *   VITE_RECAPTCHA_ENTERPRISE_SITE_KEY=6L...   (build-time; see .env.example)
+ *
+ * On your own computer (localhost) a debug token is used instead, so the production key can stay locked to the live
+ * domain. Register that token under App Check → Apps → ⋮ → Manage debug tokens.
  */
-const recaptchaKey = import.meta.env.VITE_RECAPTCHA_SITE_KEY as string | undefined;
+const enterpriseSiteKey = (import.meta.env.VITE_RECAPTCHA_ENTERPRISE_SITE_KEY as string | undefined)?.trim() || undefined;
 const isLocalhost = typeof location !== "undefined" && ["localhost", "127.0.0.1"].includes(location.hostname);
 
 function localDebugToken(): string | null {
@@ -44,9 +50,14 @@ function localDebugToken(): string | null {
 export const appCheckDebugToken = localDebugToken();
 if (appCheckDebugToken) (self as unknown as { FIREBASE_APPCHECK_DEBUG_TOKEN: string }).FIREBASE_APPCHECK_DEBUG_TOKEN = appCheckDebugToken;
 
-export const appCheck: AppCheck | null = recaptchaKey || appCheckDebugToken
-  ? initializeAppCheck(app, { provider: new ReCaptchaV3Provider(recaptchaKey ?? "debug-token-only"), isTokenAutoRefreshEnabled: true })
-  : null;
+/** How this build attests itself: a localhost debug token, the reCAPTCHA Enterprise key, or not at all. */
+export type AppCheckMode = "debug" | "enterprise" | "off";
+export const appCheckMode: AppCheckMode = appCheckDebugToken ? "debug" : enterpriseSiteKey ? "enterprise" : "off";
+
+// In debug mode the SDK uses the debug token and never calls the provider, so the placeholder key is unused.
+export const appCheck: AppCheck | null = appCheckMode === "off"
+  ? null
+  : initializeAppCheck(app, { provider: new ReCaptchaEnterpriseProvider(enterpriseSiteKey ?? "debug-token-only"), isTokenAutoRefreshEnabled: true });
 
 // getAuth persists the session in IndexedDB, so users stay signed in on this device until they sign out.
 export const auth = getAuth(app);

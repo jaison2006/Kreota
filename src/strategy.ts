@@ -1,8 +1,8 @@
-import { app, appCheckDebugToken } from "./firebase";
+import { app, appCheckDebugToken, appCheckMode } from "./firebase";
 import { formatINR } from "./data/india";
 
 /** Gemini models to try, newest first; older ones get retired for new projects, so we fall through the list. */
-export const AI_MODELS = ["gemini-3.8", "gemini-flash-latest", "gemini-2.5-flash"];
+export const AI_MODELS = ["gemini-flash-latest", "gemini-3.8", "gemini-2.5-flash"];
 
 export interface StrategyInput {
   prompt: string;
@@ -81,7 +81,8 @@ async function strategyFromGemini(input: StrategyInput): Promise<{ strategy: Str
       nextActions: Schema.array({ items: str() }),
     },
   });
-  const ai = getAI(app, { backend: new GoogleAIBackend() });
+  // Limited-use App Check tokens are single-use, which lets Firebase AI Logic reject replayed requests.
+  const ai = getAI(app, { backend: new GoogleAIBackend(), useLimitedUseAppCheckTokens: true });
   let lastError: unknown;
   for (const name of AI_MODELS) {
     const model = getGenerativeModel(ai, { model: name, generationConfig: { responseMimeType: "application/json", responseSchema: schema, temperature: 0.8 } });
@@ -238,9 +239,11 @@ export async function generateStrategy(input: StrategyInput): Promise<StrategyRe
     if (/App Check/i.test(msg)) {
       return {
         strategy: planStrategy(input), engine: "planner", appCheckToken: appCheckDebugToken ?? undefined,
-        notice: appCheckDebugToken
+        notice: appCheckMode === "debug"
           ? "Gemini is on, but Firebase App Check is blocking this browser. Register the debug token below in the Firebase console (App Check → Apps → ⋮ → Manage debug tokens), then generate again."
-          : "Gemini is on, but Firebase App Check is blocking requests from this site. Add a reCAPTCHA v3 site key (VITE_RECAPTCHA_SITE_KEY) registered in App Check, or turn off App Check enforcement for Firebase AI Logic.",
+          : appCheckMode === "enterprise"
+            ? `Gemini is on, but App Check rejected this site's reCAPTCHA Enterprise token. Check that the key lists ${location.hostname} under its domains and is the same key registered for this web app in Firebase App Check.`
+            : "Gemini is on, but this build has no App Check site key, so requests can't be verified. Set VITE_RECAPTCHA_ENTERPRISE_SITE_KEY to your reCAPTCHA Enterprise site key and rebuild.",
       };
     }
     const notice = code.includes("api-not-enabled") || /SERVICE_DISABLED|has not been used|not enabled/i.test(msg)

@@ -3,7 +3,7 @@ import type { User } from "firebase/auth";
 import Studio from "./studio/Studio";
 import {
   completeOnboarding, describeError, resendVerification, resetPassword, saveOnboardingStep, setRole, signInWithEmail,
-  createProject, deleteProject, deleteStrategy, saveStrategy, saveProfileFields, seedInterested, seedSampleProject, setListed, updateProject, type ClientProject, type ProjectDraft, type ProjectStatus, signInWithGoogle, signOutUser, signUpWithEmail, updateDisplayName, useSession, type FormValues, type Profile, type Role,
+  createProject, deleteProject, deleteStrategy, markNotificationsSeen, saveStrategy, saveProfileFields, seedInterested, seedSampleProject, setListed, updateProject, type ClientProject, type ProjectDraft, type ProjectStatus, signInWithGoogle, signOutUser, signUpWithEmail, updateDisplayName, useSession, type FormValues, type Profile, type Role,
 } from "./session";
 import { OPTIONS, ROLE_FIELDS, toLink, type FieldSection } from "./profileFields";
 import { between, CLIENTS, CREATORS, roundTo, seeded, formatCount, formatINR, formatINRShort, matchScore, totalFollowers, type SeedClient, type SeedCreator } from "./data/india";
@@ -311,8 +311,13 @@ function Sidebar({ role, page, onPage, onSwitch }: { role: Role; page: string; o
   </aside>;
 }
 
-interface Shell { role: Role; onSwitch: () => void; openProfile: () => void; openChat: (id: string) => void; pendingChat: string | null; clearPendingChat: () => void }
-const ShellContext = createContext<Shell>({ role: "client", onSwitch: () => {}, openProfile: () => {}, openChat: () => {}, pendingChat: null, clearPendingChat: () => {} });
+interface Focus { kind: "creator" | "brief" | "project" | "strategy"; id: string }
+interface Shell {
+  role: Role; onSwitch: () => void; openProfile: () => void; openChat: (id: string) => void; pendingChat: string | null; clearPendingChat: () => void;
+  go: (page: string) => void; openFocus: (page: string, focus: Focus) => void; focus: Focus | null; clearFocus: () => void; openSearch: () => void;
+}
+const noop = () => {};
+const ShellContext = createContext<Shell>({ role: "client", onSwitch: noop, openProfile: noop, openChat: noop, pendingChat: null, clearPendingChat: noop, go: noop, openFocus: noop, focus: null, clearFocus: noop, openSearch: noop });
 
 function AccountMenu() {
   const { profile, user } = useAccount();
@@ -342,8 +347,13 @@ function AccountMenu() {
   );
 }
 
+function SearchButton() {
+  const { openSearch } = useContext(ShellContext);
+  return <button className="icon-btn" onClick={openSearch} aria-label="Search (Ctrl+K)" title="Search (Ctrl+K)"><Icon name="search" /></button>;
+}
+
 function Topbar({ title, subtitle }: { title: string; subtitle?: string }) {
-  return <header className="topbar"><div><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div><div className="top-actions"><button className="icon-btn" aria-label="Search"><Icon name="search" /></button><button className="icon-btn badge" aria-label="Notifications"><Icon name="bell" /></button><AccountMenu /></div></header>;
+  return <header className="topbar"><div><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div><div className="top-actions"><SearchButton /><NotificationsMenu /><AccountMenu /></div></header>;
 }
 
 const QUICK_PROMPTS: [string, string][] = [
@@ -370,6 +380,7 @@ function ClientHome({ goCreators, goProjects }: { goCreators: () => void; goProj
   const [error, setError] = useState("");
   const [result, setResult] = useState<WsResult | null>(null);
   const saved = Object.entries(profile.strategies ?? {}).map(([id, s]) => ({ id, ...s })).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+  useFocus("strategy", (id) => { const s = profile.strategies?.[id]; if (s) setResult({ input: s.input, strategy: s.strategy, engine: s.engine, savedId: id }); });
 
   const generate = async () => {
     const amount = Number(budget.replace(/[^\d]/g, ""));
@@ -758,6 +769,7 @@ function CreatorMarketplace({ goProjects }: { goProjects: () => void }) {
   const [sort, setSort] = useState<CreatorSort>("match");
   const [open, setOpen] = useState<SeedCreator | null>(null);
   const [inviting, setInviting] = useState<SeedCreator | null>(null);
+  useFocus("creator", (id) => { setView("all"); setOpen(CREATORS.find((c) => c.id === id) ?? null); });
   const [compare, setCompare] = useState<string[]>([]);
   const [comparing, setComparing] = useState(false);
 
@@ -1045,6 +1057,7 @@ function Opportunities() {
   const [minBudget, setMinBudget] = useState(0);
   const [sort, setSort] = useState<BriefSort>("match");
   const [open, setOpen] = useState<SeedClient | null>(null);
+  useFocus("brief", (id) => { setView("all"); setOpen(CLIENTS.find((b) => b.id === id) ?? null); });
 
   const scores = useMemo(() => briefScores(profile), [profile.creator]);
   const scored = CLIENTS.map((b) => ({ b, score: scores.get(b.id) ?? 60 }));
@@ -1350,6 +1363,7 @@ function Projects() {
   const [tab, setTab] = useState<ProjectTab>("all");
   const [openId, setOpenId] = useState<string | null>(null);
   const [editing, setEditing] = useState<ProjectWithId | "new" | null>(null);
+  useFocus("project", setOpenId);
 
   useEffect(() => {
     if (profile.seeded?.projects || projects.length) return;
@@ -2310,19 +2324,256 @@ function DetailsSection({ role, section }: { role: Role; section: FieldSection }
   );
 }
 
+/* ---------- shell focus: open a specific item on another page ---------- */
+
+type FocusKind = "creator" | "brief" | "project" | "strategy";
+
+/** When search or a notification asks a page to open an item, run `onFocus` once and clear the request. */
+function useFocus(kind: FocusKind, onFocus: (id: string) => void) {
+  const { focus, clearFocus } = useContext(ShellContext);
+  useEffect(() => {
+    if (focus?.kind !== kind) return;
+    onFocus(focus.id);
+    clearFocus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus]);
+}
+
+/* ---------- global search (Ctrl+K) ---------- */
+
+interface SearchHit { key: string; group: string; title: string; sub: string; img?: string; mark?: SeedClient; icon?: string; run: () => void }
+
+function GlobalSearch({ onClose }: { onClose: () => void }) {
+  const { user, profile } = useAccount();
+  const shell = useContext(ShellContext);
+  const [q, setQ] = useState("");
+  const [active, setActive] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const realInbox = useInbox(user.uid).data;
+  const demoInbox = useDemoInbox(user.uid).data;
+  const directory = useDirectory().data;
+  const people = new Map<string, Contact>([...DEMO_CONTACTS, ...directory].map((d) => [d.uid, d]));
+  const client = shell.role === "client";
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const hit = (text: string) => words.every((w) => text.toLowerCase().includes(w));
+  const go = (fn: () => void) => () => { onClose(); fn(); };
+
+  const pages: [string, string, string][] = client
+    ? [["home", "home", "AI workspace"], ["creators", "users", "Discover creators"], ["projects", "brief", "Projects"], ["messages", "chat", "Messages"], ["profile", "users", "My profile"]]
+    : [["home", "home", "Overview"], ["opportunities", "brief", "Opportunities"], ["messages", "chat", "Messages"], ["studio", "spark", "Kreota Studio"], ["profile", "users", "My profile"]];
+
+  const groups: SearchHit[][] = [];
+  groups.push(pages.filter(([, , label]) => !words.length || hit(label)).map(([id, icon, label]) => ({ key: `page-${id}`, group: "Pages", title: label, sub: "Go to page", icon, run: go(() => shell.go(id)) })));
+  if (client) {
+    const want = clientWant(profile);
+    groups.push(CREATORS
+      .filter((c) => words.length && hit(`${c.name} ${c.handle} ${c.title} ${c.city} ${c.state} ${c.niches.join(" ")} ${c.languages.join(" ")}`))
+      .map((c) => ({ c, s: matchScore(c, want) })).sort((a, b) => b.s - a.s).slice(0, 6)
+      .map(({ c, s }) => ({ key: `creator-${c.id}`, group: "Creators", title: c.name, sub: `${c.title} · ${c.city} · ${s}% match`, img: creatorAvatar(c), run: go(() => shell.openFocus("creators", { kind: "creator", id: c.id })) })));
+    groups.push(projectsOf(profile)
+      .filter((p) => words.length && hit(`${p.title} ${p.objective} ${p.niches.join(" ")} ${p.platforms.join(" ")}`)).slice(0, 5)
+      .map((p) => ({ key: `project-${p.id}`, group: "Projects", title: p.title, sub: `${STATUS_LABEL[p.status]} · ${dueLabel(p)}`, icon: "brief", run: go(() => shell.openFocus("projects", { kind: "project", id: p.id })) })));
+    groups.push(Object.entries(profile.strategies ?? {})
+      .filter(([, s]) => words.length && hit(`${s.strategy.title} ${s.strategy.summary} ${s.input.prompt}`)).slice(0, 4)
+      .map(([id, s]) => ({ key: `strategy-${id}`, group: "Saved strategies", title: s.strategy.title, sub: `${formatINRShort(s.input.budget)} · ${s.input.weeks} weeks`, icon: "spark", run: go(() => shell.openFocus("home", { kind: "strategy", id })) })));
+  } else {
+    const scores = briefScores(profile);
+    groups.push(CLIENTS
+      .filter((b) => words.length && hit(`${b.brand} ${b.brief.title} ${b.brief.summary} ${b.industry} ${b.city} ${b.brief.niches.join(" ")}`))
+      .sort((a, b) => (scores.get(b.id) ?? 0) - (scores.get(a.id) ?? 0)).slice(0, 6)
+      .map((b) => ({ key: `brief-${b.id}`, group: "Brand briefs", title: b.brief.title, sub: `${b.brand} · ${briefBudget(b)} · ${scores.get(b.id) ?? 60}% match`, mark: b, run: go(() => shell.openFocus("opportunities", { kind: "brief", id: b.id })) })));
+  }
+  const threads = [...realInbox, ...demoInbox];
+  groups.push(threads
+    .map((t) => ({ t, p: people.get(t.with) }))
+    .filter(({ t, p }) => words.length && hit(`${p?.name ?? ""} ${p?.headline ?? ""} ${t.lastText ?? ""}`)).slice(0, 5)
+    .map(({ t, p }) => ({ key: `chat-${t.cid}`, group: "Conversations", title: p?.name ?? "Kreota member", sub: t.lastText ?? "No messages yet", img: p?.photoURL ?? undefined, icon: "chat", run: go(() => shell.openChat(t.with)) })));
+
+  const flat = groups.flat();
+  const sel = Math.min(active, Math.max(0, flat.length - 1));
+  useEffect(() => { setActive(0); }, [q]);
+  useEffect(() => { listRef.current?.querySelector(".gs-hit.on")?.scrollIntoView({ block: "nearest" }); }, [sel]);
+
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); setActive((i) => Math.min(flat.length - 1, i + 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setActive((i) => Math.max(0, i - 1)); }
+    else if (e.key === "Enter" && flat[sel]) { e.preventDefault(); flat[sel].run(); }
+    else if (e.key === "Escape") { e.preventDefault(); onClose(); }
+  };
+
+  let index = -1;
+  return (
+    <div className="gs-bg" onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="gs" role="dialog" aria-modal="true" aria-label="Search Kreota">
+        <div className="gs-input">
+          <Icon name="search" />
+          <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={onKey}
+            placeholder={client ? "Search creators, projects, strategies, chats…" : "Search brand briefs, brands, chats, pages…"}
+            aria-label="Search" role="combobox" aria-expanded="true" aria-controls="gs-results" aria-activedescendant={flat[sel] ? `gs-${flat[sel].key}` : undefined} />
+          <kbd>Esc</kbd>
+        </div>
+        <div className="gs-results" id="gs-results" role="listbox" ref={listRef}>
+          {groups.map((g) => g.length ? (
+            <div key={g[0].group} className="gs-group">
+              <span className="gs-label">{g[0].group}</span>
+              {g.map((h) => {
+                index++;
+                const on = index === sel;
+                const i = index;
+                return (
+                  <button key={h.key} id={`gs-${h.key}`} role="option" aria-selected={on} className={`gs-hit${on ? " on" : ""}`} onMouseEnter={() => setActive(i)} onClick={h.run}>
+                    {h.img ? <img src={h.img} alt="" referrerPolicy="no-referrer" /> : h.mark ? <BrandMark client={h.mark} size={34} /> : <span className="gs-icon"><Icon name={h.icon ?? "search"} size={16} /></span>}
+                    <span className="gs-text"><b>{h.title}</b><small>{h.sub}</small></span>
+                    {on && <Icon name="arrow" size={15} />}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null)}
+          {words.length > 0 && flat.length === 0 && <div className="gs-empty"><b>No results for “{q.trim()}”</b><span>Try a name, city, niche or brand.</span></div>}
+        </div>
+        <footer className="gs-foot"><span><kbd>↑</kbd><kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>Ctrl</kbd><kbd>K</kbd> anytime</span></footer>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- notifications ---------- */
+
+interface Note { id: string; icon: string; tone: string; title: string; detail: string; at: number; run: () => void }
+
+function useNotifications(): Note[] {
+  const { user, profile } = useAccount();
+  const shell = useContext(ShellContext);
+  const realInbox = useInbox(user.uid).data;
+  const demoInbox = useDemoInbox(user.uid).data;
+  const directory = useDirectory().data;
+  const people = new Map<string, Contact>([...DEMO_CONTACTS, ...directory].map((d) => [d.uid, d]));
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const startOfToday = today.getTime();
+  const notes: Note[] = [];
+
+  for (const t of [...realInbox, ...demoInbox]) {
+    if (!t.unread) continue;
+    const p = people.get(t.with);
+    notes.push({ id: `m-${t.cid}-${t.lastAt}`, icon: "chat", tone: "lilac", title: `${p?.name ?? "Someone"} sent you ${t.unread > 1 ? `${t.unread} messages` : "a message"}`, detail: t.lastText ?? "", at: t.lastAt ?? t.updatedAt ?? 0, run: () => shell.openChat(t.with) });
+  }
+
+  if (shell.role === "client") {
+    for (const p of projectsOf(profile)) {
+      if (p.status === "open") {
+        for (const id of keysOf(p.invited)) {
+          const c = CREATORS.find((x) => x.id === id);
+          if (c && !p.declined?.[id] && !p.hired?.[id]) notes.push({ id: `p-${p.id}-${id}`, icon: "brief", tone: "mint", title: `${c.name} sent a proposal`, detail: p.title, at: p.invited![id], run: () => shell.openFocus("projects", { kind: "project", id: p.id }) });
+        }
+      }
+      if (p.status !== "completed" && p.status !== "draft") {
+        const d = daysUntil(p.deadline);
+        if (d <= 3) notes.push({ id: `d-${p.id}-${p.deadline}`, icon: "clock", tone: "peach", title: d < 0 ? `“${p.title}” is overdue` : `“${p.title}” is due ${d === 0 ? "today" : `in ${d} day${d === 1 ? "" : "s"}`}`, detail: STATUS_LABEL[p.status], at: startOfToday, run: () => shell.openFocus("projects", { kind: "project", id: p.id }) });
+      }
+    }
+  } else {
+    const scores = briefScores(profile);
+    const interested = profile.interested ?? {};
+    for (const b of CLIENTS) {
+      const s = scores.get(b.id) ?? 0;
+      if (s >= 85 && b.brief.postedDaysAgo <= 3 && !interested[b.id]) notes.push({ id: `b-${b.id}`, icon: "spark", tone: "mint", title: `New ${s}% match: ${b.brief.title}`, detail: `${b.brand} · ${briefBudget(b)}`, at: startOfToday - b.brief.postedDaysAgo * 86400000, run: () => shell.openFocus("opportunities", { kind: "brief", id: b.id }) });
+      if (interested[b.id] && b.brief.deadlineDays <= 5) notes.push({ id: `c-${b.id}`, icon: "clock", tone: "peach", title: `Shortlisted brief closes in ${b.brief.deadlineDays} days`, detail: `${b.brief.title} · ${b.brand}`, at: startOfToday, run: () => shell.openFocus("opportunities", { kind: "brief", id: b.id }) });
+    }
+  }
+
+  const strength = profileStrength(profile, user, shell.role);
+  if (strength.pct < 80) notes.push({ id: `profile-${strength.pct}`, icon: "users", tone: "mint", title: `Your profile is ${strength.pct}% complete`, detail: `Add ${strength.missing.slice(0, 2).join(" and ").toLowerCase()} to get better matches`, at: profile.createdAt ?? 0, run: shell.openProfile });
+  if (!user.emailVerified) notes.push({ id: "verify", icon: "check", tone: "peach", title: "Verify your email", detail: `We sent a link to ${user.email}`, at: profile.createdAt ?? 0, run: shell.openProfile });
+
+  return notes.sort((a, b) => b.at - a.at).slice(0, 30);
+}
+
+const timeAgo = (t: number) => {
+  if (!t) return "";
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  if (s < 7 * 86400) return `${Math.floor(s / 86400)}d ago`;
+  return new Date(t).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+};
+
+function NotificationsMenu() {
+  const { user, profile } = useAccount();
+  const notes = useNotifications();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const seenAt = profile.notifSeenAt ?? 0;
+  const unread = notes.filter((n) => n.at > seenAt).length;
+  const markRead = () => { if (unread) markNotificationsSeen(user.uid).catch(() => {}); };
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", esc);
+    return () => { window.removeEventListener("pointerdown", close); window.removeEventListener("keydown", esc); };
+  }, [open]);
+
+  const fresh = notes.filter((n) => n.at > seenAt);
+  const older = notes.filter((n) => n.at <= seenAt);
+  const item = (n: Note) => (
+    <button key={n.id} role="menuitem" className={`nt-item${n.at > seenAt ? " unread" : ""}`} onClick={() => { setOpen(false); markRead(); n.run(); }}>
+      <i className={n.tone}><Icon name={n.icon} size={16} /></i>
+      <span><b>{n.title}</b>{n.detail && <small>{n.detail}</small>}</span>
+      <time>{timeAgo(n.at)}</time>
+    </button>
+  );
+
+  return (
+    <div className="nt" ref={ref}>
+      <button className="icon-btn nt-bell" onClick={() => setOpen((v) => !v)} aria-haspopup="menu" aria-expanded={open} aria-label={unread ? `Notifications, ${unread} unread` : "Notifications"}>
+        <Icon name="bell" />
+        {unread > 0 && <span className="nt-count">{unread > 9 ? "9+" : unread}</span>}
+      </button>
+      {open && (
+        <div className="nt-pop" role="menu" aria-label="Notifications">
+          <header><b>Notifications</b>{unread > 0 && <button className="text-button" onClick={markRead}>Mark all as read</button>}</header>
+          <div className="nt-list">
+            {notes.length === 0 && <div className="nt-empty"><Icon name="bell" size={22} /><b>You're all caught up</b><span>New messages, proposals and deadlines show up here.</span></div>}
+            {fresh.length > 0 && <span className="nt-label">New</span>}
+            {fresh.map(item)}
+            {older.length > 0 && <span className="nt-label">Earlier</span>}
+            {older.map(item)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AppShell({ role, onSwitch }: { role: Role; onSwitch: () => void }) {
   const { user } = useAccount();
   const [clientPage,setClientPage]=useState<ClientPage>("home");
   const [creatorPage,setCreatorPage]=useState<CreatorPage>("home");
   const [pendingChat,setPendingChat]=useState<string|null>(null);
+  const [focus,setFocus]=useState<Focus|null>(null);
+  const [searching,setSearching]=useState(false);
   const page=role==="client"?clientPage:creatorPage;
+  const go=(p:string)=>{ if(role==="client") setClientPage(p as ClientPage); else setCreatorPage(p as CreatorPage); };
+  useEffect(()=>{
+    const onKey=(e:KeyboardEvent)=>{ if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="k"){ e.preventDefault(); setSearching((v)=>!v); } };
+    window.addEventListener("keydown",onKey);
+    return ()=>window.removeEventListener("keydown",onKey);
+  },[]);
   let content: ReactNode;
   if(role==="client"){
     content=clientPage==="home"?<ClientHome goCreators={()=>setClientPage("creators")} goProjects={()=>setClientPage("projects")}/>:clientPage==="creators"?<CreatorMarketplace goProjects={()=>setClientPage("projects")}/>:clientPage==="projects"?<Projects/>:clientPage==="profile"?<ProfilePage/>:<Messages/>;
   } else {
     content=creatorPage==="home"?<CreatorHome go={setCreatorPage}/>:creatorPage==="opportunities"?<Opportunities/>:creatorPage==="messages"?<Messages/>:creatorPage==="studio"?<Studio key={user.uid} userId={user.uid}/>:<ProfilePage/>;
   }
-  return <ShellContext.Provider value={{ role, onSwitch, openProfile: () => (role === "client" ? setClientPage("profile") : setCreatorPage("profile")), openChat: (id) => { setPendingChat(id); if (role === "client") setClientPage("messages"); else setCreatorPage("messages"); }, pendingChat, clearPendingChat: () => setPendingChat(null) }}><div className="app-shell"><Sidebar role={role} page={page} onPage={role==="client"?setClientPage:setCreatorPage} onSwitch={onSwitch}/><main className="app-main">{content}</main></div></ShellContext.Provider>;
+  return <ShellContext.Provider value={{ role, onSwitch, openProfile: () => go("profile"), openChat: (id) => { setPendingChat(id); go("messages"); }, pendingChat, clearPendingChat: () => setPendingChat(null), go, openFocus: (p, f) => { setFocus(f); go(p); }, focus, clearFocus: () => setFocus(null), openSearch: () => setSearching(true) }}><div className="app-shell"><Sidebar role={role} page={page} onPage={role==="client"?setClientPage:setCreatorPage} onSwitch={onSwitch}/><main className="app-main">{content}</main></div>{searching && <GlobalSearch onClose={() => setSearching(false)} />}</ShellContext.Provider>;
 }
 
 function Splash() {
