@@ -1,4 +1,5 @@
 import { FormEvent, ReactNode, useState } from "react";
+import Studio from "./studio/Studio";
 
 type Role = "client" | "creator";
 type Screen = "auth" | "role" | "onboarding" | "app";
@@ -299,19 +300,6 @@ function Messages() {
   return <><Topbar title="Messages" subtitle="Keep every creative conversation in context."/><div className="messages-layout">
     <aside className="conversation-list"><div className="search-box"><Icon name="search"/><input placeholder="Search conversations"/></div>{creators.slice(0,3).map((c,i)=><button className={i===0?"active":""} key={c.name}><img src={c.photo} alt=""/><div><b>{i===0?"Northstar Labs":c.name}</b><span>{i===0?"The team loved your direction...":"Shared a project update"}</span></div><time>{i===0?"2m":"1d"}</time></button>)}</aside>
     <section className="chat-window"><header><div className="chat-person"><div className="user-avatar client">N</div><div><b>Northstar Labs</b><span><i/> Active now</span></div></div><div><button className="icon-btn"><Icon name="video"/></button><button className="icon-btn"><Icon name="more"/></button></div></header><div className="project-context"><Icon name="brief"/><div><span>PROJECT</span><b>Summer Reset Campaign</b></div><em>In progress</em></div><div className="chat-body"><div className="date-line">TODAY</div>{messages.map((m,i)=><div className={`bubble ${i%2?"mine":""}`} key={i}>{m}<time>{i%2?"10:34 AM":"10:28 AM"}</time></div>)}</div><div className="chat-input"><button><Icon name="plus"/></button><input value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&send()} placeholder="Write a message..."/><button className="send-btn" onClick={send}><Icon name="send" size={17}/></button></div></section>
-  </div></>;
-}
-
-function Studio() {
-  const [playing,setPlaying]=useState(false);
-  return <><Topbar title="Kreota Studio" subtitle="Create and refine content with an AI-native editor."/><div className="studio">
-    <div className="studio-toolbar"><div><Button kind="light">← Back</Button><div><b>Summer Reset · First cut</b><span>Saved just now</span></div></div><div><Button kind="light">Share</Button><Button icon="upload">Submit for review</Button></div></div>
-    <div className="editor"><aside className="editor-tools">{[["grid","Media"],["spark","AI tools"],["brief","Text"],["video","Captions"]].map(([i,l],n)=><button className={n===1?"active":""} key={l}><Icon name={i}/><span>{l}</span></button>)}</aside>
-      <section className="ai-tools"><span>AI CREATIVE TOOLS</span><h3>Shape your story</h3><div className="ai-tool-card"><Icon name="spark"/><div><b>Smart cut</b><p>Remove pauses and tighten pacing.</p></div></div><div className="ai-tool-card"><Icon name="chat"/><div><b>Script assist</b><p>Rewrite hooks in your voice.</p></div></div><div className="ai-tool-card"><Icon name="video"/><div><b>Auto reframe</b><p>Adapt to every platform.</p></div></div><label>Ask Kreota AI<textarea placeholder="Make the first 3 seconds more attention-grabbing..."/></label><Button kind="accent" className="full"><Icon name="spark"/> Generate edit</Button></section>
-      <main className="canvas"><div className="video-canvas"><img src={photos[2]} alt="Creator video preview"/><div className="video-overlay"><span>NORTHSTAR</span><h2>My 3pm reset<br/>looks like this.</h2></div><button onClick={()=>setPlaying(!playing)}><Icon name={playing?"check":"play"} size={24}/></button></div></main>
-      <aside className="properties"><span>PROPERTIES</span><h3>Video</h3><label>Format<select><option>9:16 · Reel / TikTok</option></select></label><label>Canvas<div className="color-options"><button className="black"/><button className="cream"/><button className="mint"/></div></label><label>Volume<input type="range" defaultValue="80"/></label><div className="toggle-row"><span>Auto captions</span><input type="checkbox" defaultChecked/></div><div className="toggle-row"><span>Brand safe area</span><input type="checkbox" defaultChecked/></div></aside>
-    </div>
-    <div className="timeline-editor"><div className="time-ruler"><span>00:00</span><span>00:05</span><span>00:10</span><span>00:15</span></div><div className="track"><b>VIDEO 1</b>{[0,1,2,3,4,5].map(n=><img key={n} src={photos[2]} alt=""/>)}<i/></div><div className="audio-track"><b>AUDIO</b><div>{Array.from({length:45}).map((_,i)=><span key={i} style={{height:`${8+(i*7)%20}px`}}/>)}</div></div></div>
   </div></>;
 }
 
