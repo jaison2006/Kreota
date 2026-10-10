@@ -1,9 +1,9 @@
-import { createContext, FormEvent, ReactNode, useContext, useEffect, useRef, useState } from "react";
+import { createContext, FormEvent, ReactNode, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "firebase/auth";
 import Studio from "./studio/Studio";
 import {
   completeOnboarding, describeError, resendVerification, resetPassword, saveOnboardingStep, setRole, signInWithEmail,
-  saveProfileFields, setListed, signInWithGoogle, signOutUser, signUpWithEmail, updateDisplayName, useSession, type FormValues, type Profile, type Role,
+  saveProfileFields, seedInterested, setListed, signInWithGoogle, signOutUser, signUpWithEmail, updateDisplayName, useSession, type FormValues, type Profile, type Role,
 } from "./session";
 import { OPTIONS, ROLE_FIELDS, toLink, type FieldSection } from "./profileFields";
 import { CLIENTS, CREATORS, formatCount, formatINR, formatINRShort, matchScore, totalFollowers, type SeedClient, type SeedCreator } from "./data/india";
@@ -405,15 +405,41 @@ function matchReasons(c: SeedCreator, want: ReturnType<typeof clientWant>) {
 }
 
 /** How well a brand brief fits the signed-in creator, from their skills and category. */
-function briefScore(b: SeedClient, p: Profile) {
-  const words = `${p.creator?.skills ?? ""} ${p.creator?.category ?? ""} ${p.creator?.bio ?? ""}`.toLowerCase();
-  let score = 64 + (b.id.charCodeAt(2) % 7);
-  for (const n of b.brief.niches) if (words.includes(n.toLowerCase())) score += 10;
-  if ((p.creator?.category as string)?.includes("Video") && b.brief.deliverables.some((d) => /reel|video|short|film/i.test(d))) score += 6;
-  if ((p.creator?.category as string)?.includes("Photo") && b.brief.deliverables.some((d) => /still|shoot|photo|lookbook/i.test(d))) score += 8;
-  if ((p.creator?.category as string)?.includes("Design") && b.brief.deliverables.some((d) => /motion|3d|render|design/i.test(d))) score += 8;
-  if ((p.creator?.category as string)?.includes("Writing") && b.brief.deliverables.some((d) => /linkedin|carousel|explainer|post/i.test(d))) score += 8;
-  return Math.min(99, score);
+/** Words in the creator's own profile, used to judge brief fit. */
+function profileWords(p: Profile) {
+  const c = p.creator ?? {};
+  return `${c.skills ?? ""} ${c.category ?? ""} ${c.bio ?? ""} ${c.displayName ?? ""} ${c.social ?? ""}`.toLowerCase();
+}
+
+/** Raw fit between a brief and the signed-in creator: niches, deliverable type, city and budget. */
+function rawBriefFit(b: SeedClient, p: Profile) {
+  const words = profileWords(p);
+  const category = (p.creator?.category as string) ?? "";
+  const location = ((p.creator?.location as string) ?? "").toLowerCase();
+  let fit = (b.id.charCodeAt(1) * 7 + b.id.charCodeAt(2) * 13) % 9; // stable tie-breaker
+  for (const n of b.brief.niches) {
+    const n0 = n.toLowerCase();
+    if (words.includes(n0) || n0.split(" ").some((w) => w.length > 3 && words.includes(w))) fit += 14;
+  }
+  const d = b.brief.deliverables.join(" ");
+  if (category.includes("Video") && /reel|video|short|film|vlog|livestream/i.test(d)) fit += 12;
+  if (category.includes("Photo") && /still|shoot|photo|lookbook/i.test(d)) fit += 12;
+  if (category.includes("Design") && /motion|3d|render|design|graphic/i.test(d)) fit += 12;
+  if (category.includes("Writing") && /linkedin|carousel|explainer|post|thread/i.test(d)) fit += 12;
+  if (location && location.includes(b.city.toLowerCase())) fit += 8;
+  else if (location && location.includes(b.state.toLowerCase())) fit += 4;
+  fit += Math.min(6, b.brief.budget[1] / 50_000); // better-paid briefs edge ahead
+  if (b.verified) fit += 2;
+  return fit;
+}
+
+/** Match % for every brief, scaled across all 50 so your best fits always land near the top (58–97%). */
+function briefScores(p: Profile): Map<string, number> {
+  const raw = CLIENTS.map((b) => [b.id, rawBriefFit(b, p)] as const);
+  const values = raw.map(([, v]) => v);
+  const lo = Math.min(...values);
+  const hi = Math.max(...values);
+  return new Map(raw.map(([id, v]) => [id, Math.round(58 + ((v - lo) / Math.max(1, hi - lo)) * 39)]));
 }
 
 const rateRange = (c: SeedCreator) => `${formatINRShort(c.rateFrom)} – ${formatINRShort(c.rateTo)}`;
@@ -620,8 +646,11 @@ function Opportunities() {
   const [sort, setSort] = useState<BriefSort>("match");
   const [open, setOpen] = useState<SeedClient | null>(null);
 
-  const scored = CLIENTS.map((b) => ({ b, score: briefScore(b, profile) }));
-  const recommended = scored.filter((x) => x.score >= 80);
+  const scores = useMemo(() => briefScores(profile), [profile.creator]);
+  const scored = CLIENTS.map((b) => ({ b, score: scores.get(b.id) ?? 60 }));
+  // Recommended is always your 12 best fits; "strong" is anything scoring 80%+.
+  const recommended = [...scored].sort((a, b) => b.score - a.score).slice(0, 12);
+  const strong = scored.filter((x) => x.score >= 80);
   const closing = scored.filter((x) => x.b.brief.deadlineDays <= 10);
   const mine = scored.filter((x) => interested[x.b.id]);
   const newThisWeek = scored.filter((x) => x.b.brief.postedDaysAgo <= 7).length;
@@ -640,6 +669,12 @@ function Opportunities() {
   const filtersOn = !!(q || industry || platform || minBudget);
   const reset = () => { setQ(""); setIndustry(""); setPlatform(""); setMinBudget(0); };
   const toggle = (b: SeedClient) => setListed(user.uid, "interested", b.id, !interested[b.id]);
+  // First visit: shortlist your top 3 so the Interested tab has something to work with. Runs once per account.
+  useEffect(() => {
+    if (profile.seeded?.interested) return;
+    seedInterested(user.uid, recommended.slice(0, 3).map((x) => x.b.id)).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile.seeded?.interested, user.uid]);
   const sortLabel = { match: "best match", newest: "newest", budget: "highest budget", deadline: "soonest deadline" }[sort];
   const tabs: [BriefView, string, number][] = [["recommended", "Recommended for you", recommended.length], ["all", "All briefs", scored.length], ["closing", "Closing soon", closing.length], ["interested", "Interested", mine.length]];
 
@@ -648,7 +683,7 @@ function Opportunities() {
     <div className="page-content op2">
       <section className="op2-stats" aria-label="Summary">
         <div><span>Open briefs</span><b>{scored.length}</b><small>from {new Set(CLIENTS.map((b) => b.industry)).size} industries</small></div>
-        <div className="mint"><span>Strong matches</span><b>{recommended.length}</b><small>80%+ fit with your skills</small></div>
+        <div className="mint"><span>Strong matches</span><b>{strong.length}</b><small>80%+ fit with your skills</small></div>
         <div className="lilac"><span>You're interested in</span><b>{mine.length}</b><small>{mine.length ? "Saved to your shortlist" : "Tap ☆ on a brief to shortlist it"}</small></div>
         <div className="peach"><span>New this week</span><b>{newThisWeek}</b><small>Posted in the last 7 days</small></div>
       </section>
@@ -715,7 +750,7 @@ function Opportunities() {
         </div>
       )}
     </div>
-    {open && <BriefDrawer b={open} score={briefScore(open, profile)} interested={!!interested[open.id]} onToggle={() => toggle(open)} onClose={() => setOpen(null)} />}
+    {open && <BriefDrawer b={open} score={scores.get(open.id) ?? 60} interested={!!interested[open.id]} onToggle={() => toggle(open)} onClose={() => setOpen(null)} />}
   </>;
 }
 

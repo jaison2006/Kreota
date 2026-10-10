@@ -35,6 +35,8 @@ export interface Profile {
   shortlist?: Record<string, number>;
   invites?: Record<string, number>;
   interested?: Record<string, number>;
+  /** One-time starter data already added to this account. */
+  seeded?: Record<string, boolean>;
 }
 
 export type Session =
@@ -151,6 +153,10 @@ export const saveOnboardingStep = (uid: string, role: Role, values: FormValues) 
 /** Adds or removes a demo creator/brief id from one of the person's lists. */
 export const setListed = (uid: string, list: "shortlist" | "invites" | "interested", id: string, on: boolean) =>
   update(userRef(uid), { [`${list}/${id}`]: on ? serverTimestamp() : null });
+
+/** Adds a starter shortlist once, and marks it done so removing items later sticks. */
+export const seedInterested = (uid: string, ids: string[]) =>
+  update(userRef(uid), { ...Object.fromEntries(ids.map((id) => [`interested/${id}`, serverTimestamp()])), "seeded/interested": true });
 
 /** Saves edits made on the profile page. */
 export const saveProfileFields = (uid: string, role: Role, values: FormValues) =>
