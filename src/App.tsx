@@ -3,10 +3,10 @@ import type { User } from "firebase/auth";
 import Studio from "./studio/Studio";
 import {
   completeOnboarding, describeError, resendVerification, resetPassword, saveOnboardingStep, setRole, signInWithEmail,
-  saveProfileFields, seedInterested, setListed, signInWithGoogle, signOutUser, signUpWithEmail, updateDisplayName, useSession, type FormValues, type Profile, type Role,
+  createProject, deleteProject, saveProfileFields, seedInterested, seedSampleProject, setListed, updateProject, type ClientProject, type ProjectDraft, type ProjectStatus, signInWithGoogle, signOutUser, signUpWithEmail, updateDisplayName, useSession, type FormValues, type Profile, type Role,
 } from "./session";
 import { OPTIONS, ROLE_FIELDS, toLink, type FieldSection } from "./profileFields";
-import { CLIENTS, CREATORS, formatCount, formatINR, formatINRShort, matchScore, totalFollowers, type SeedClient, type SeedCreator } from "./data/india";
+import { between, CLIENTS, CREATORS, roundTo, seeded, formatCount, formatINR, formatINRShort, matchScore, totalFollowers, type SeedClient, type SeedCreator } from "./data/india";
 import { creatorAvatar } from "./data/avatars";
 import { conversationId, DEMO_CONTACTS, FileTooLargeError, loadFileData, MAX_FILE_BYTES, sendDemoFile, sendFile, type FileMeta, demoIdOf, isDemoId, markDemoRead, markRead, openConversation, openDemoConversation, publishDirectoryEntry, sendDemoMessage, sendMessage, useDemoInbox, useDemoMessages, useDirectory, useInbox, useMessages, type Contact, type DirectoryEntry } from "./messaging";
 
@@ -310,7 +310,8 @@ function Sidebar({ role, page, onPage, onSwitch }: { role: Role; page: string; o
   </aside>;
 }
 
-const ShellContext = createContext<{ role: Role; onSwitch: () => void; openProfile: () => void }>({ role: "client", onSwitch: () => {}, openProfile: () => {} });
+interface Shell { role: Role; onSwitch: () => void; openProfile: () => void; openChat: (id: string) => void; pendingChat: string | null; clearPendingChat: () => void }
+const ShellContext = createContext<Shell>({ role: "client", onSwitch: () => {}, openProfile: () => {}, openChat: () => {}, pendingChat: null, clearPendingChat: () => {} });
 
 function AccountMenu() {
   const { profile, user } = useAccount();
@@ -344,7 +345,7 @@ function Topbar({ title, subtitle }: { title: string; subtitle?: string }) {
   return <header className="topbar"><div><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div><div className="top-actions"><button className="icon-btn" aria-label="Search"><Icon name="search" /></button><button className="icon-btn badge" aria-label="Notifications"><Icon name="bell" /></button><AccountMenu /></div></header>;
 }
 
-function ClientHome({ goCreators }: { goCreators: () => void }) {
+function ClientHome({ goCreators, goProjects }: { goCreators: () => void; goProjects: () => void }) {
   const { profile } = useAccount();
   const [generated, setGenerated] = useState(false);
   const [prompt, setPrompt] = useState("");
@@ -356,7 +357,7 @@ function ClientHome({ goCreators }: { goCreators: () => void }) {
         <textarea value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Describe your product, audience and what you want to create..." />
         <div className="composer-footer"><div className="prompt-chips"><button onClick={() => setPrompt("Launch campaign for our new adaptogenic sparkling water")}>Product launch</button><button onClick={() => setPrompt("Create a 30-day social content plan for Gen Z")}>Social strategy</button><button onClick={() => setPrompt("Find an authentic creator for our wellness campaign")}>Find creators</button></div><Button kind="accent" icon="spark" onClick={() => setGenerated(true)}>Build my strategy</Button></div>
       </section>
-      {generated ? <StrategyReport goCreators={goCreators} /> : <DashboardOverview goCreators={goCreators} />}
+      {generated ? <StrategyReport goCreators={goCreators} /> : <DashboardOverview goCreators={goCreators} goProjects={goProjects} />}
     </div>
   </>;
 }
@@ -812,18 +813,41 @@ function topMatches(profile: Profile, n: number) {
   return CREATORS.map((c) => ({ c, score: matchScore(c, want) })).sort((a, b) => b.score - a.score).slice(0, n);
 }
 
-function DashboardOverview({ goCreators }: { goCreators: () => void }) {
+function DashboardOverview({ goCreators, goProjects }: { goCreators: () => void; goProjects: () => void }) {
   const { profile } = useAccount();
+  const projects = projectsOf(profile);
+  const live = projects.filter((p) => p.status === "open" || p.status === "in_progress");
+  const proposals = projects.filter((p) => p.status === "open").reduce((n, p) => n + keysOf(p.invited).length, 0);
+  const want = clientWant(profile);
+  const strongCreators = CREATORS.filter((c) => matchScore(c, want) >= 85).length;
+  const saved = keysOf(profile.shortlist);
+  const latest = live[0];
+  const stage = latest ? stageOf(latest) : 0;
+  const people = latest ? [...keysOf(latest.hired), ...keysOf(latest.invited)].filter((v, i, a) => a.indexOf(v) === i).map((id) => CREATORS.find((c) => c.id === id)).filter(Boolean) as SeedCreator[] : [];
   return <>
-    <div className="section-title"><div><h2>Your creative workspace</h2><p>Everything moving forward, at a glance.</p></div><button className="text-button">View all activity <Icon name="arrow" size={15} /></button></div>
+    <div className="section-title"><div><h2>Your creative workspace</h2><p>Everything moving forward, at a glance.</p></div><button className="text-button" onClick={goProjects}>All projects <Icon name="arrow" size={15} /></button></div>
     <div className="metric-grid">
-      <div className="metric-card mint"><span>ACTIVE PROJECTS</span><b>04</b><p><i>+2</i> this month</p></div>
-      <div className="metric-card lilac"><span>CREATOR MATCHES</span><b>18</b><p>Curated for your briefs</p></div>
-      <div className="metric-card peach"><span>CONTENT IN REVIEW</span><b>07</b><p>3 need your feedback</p></div>
-      <div className="metric-card dark"><span>CAMPAIGN REACH</span><b>2.4M</b><p>▲ 18% from last month</p></div>
+      <button className="metric-card mint" onClick={goProjects}><span>ACTIVE PROJECTS</span><b>{String(live.length).padStart(2, "0")}</b><p>{projects.filter((p) => p.status === "draft").length} draft · {projects.filter((p) => p.status === "completed").length} completed</p></button>
+      <button className="metric-card lilac" onClick={goCreators}><span>CREATOR MATCHES</span><b>{String(strongCreators).padStart(2, "0")}</b><p>85%+ fit with your brand</p></button>
+      <button className="metric-card peach" onClick={goProjects}><span>PROPOSALS TO REVIEW</span><b>{String(proposals).padStart(2, "0")}</b><p>Across your open projects</p></button>
+      <button className="metric-card dark" onClick={goCreators}><span>SAVED CREATORS</span><b>{String(saved.length).padStart(2, "0")}</b><p>{keysOf(profile.invites).length} invited from Discover</p></button>
     </div>
     <div className="dashboard-grid">
-      <section className="panel project-panel"><div className="panel-head"><div><span className="status-dot" /> ACTIVE PROJECT</div><button><Icon name="more" /></button></div><h3>Summer Reset Campaign</h3><p>Launch content for your new product line.</p><div className="progress-label"><span>Content progress</span><b>68%</b></div><div className="progress"><span style={{width:"68%"}} /></div><div className="project-meta"><span><Icon name="calendar" size={15} /> Due Jun 28</span><div className="avatar-stack small">{CREATORS.slice(3,6).map(c=><img src={creatorAvatar(c)} key={c.id} alt="" />)}</div></div></section>
+      {latest ? (
+        <section className="panel project-panel">
+          <div className="panel-head"><div><span className="status-dot" /> {STATUS_LABEL[latest.status].toUpperCase()}</div><button className="text-button" onClick={goProjects}>Open <Icon name="arrow" size={14} /></button></div>
+          <h3>{latest.title}</h3><p>{latest.objective}</p>
+          <div className="progress-label"><span>{stageLabel(stage)}</span><b>{Math.round((stage / 6) * 100)}%</b></div>
+          <div className="progress"><span style={{ width: `${(stage / 6) * 100}%` }} /></div>
+          <div className="project-meta"><span><Icon name="calendar" size={15} /> {dueLabel(latest)}</span><div className="avatar-stack small">{people.slice(0, 4).map((c) => <img src={creatorAvatar(c)} key={c.id} alt="" />)}</div></div>
+        </section>
+      ) : (
+        <section className="panel project-panel">
+          <div className="panel-head"><div><span className="status-dot" /> NO LIVE PROJECTS</div></div>
+          <h3>Start your first project</h3><p>Write a brief, invite matched creators and compare proposals side by side.</p>
+          <div className="project-meta"><Button icon="plus" onClick={goProjects}>New project</Button></div>
+        </section>
+      )}
       <section className="panel recommendations"><div className="panel-head"><div><span>AI RECOMMENDED</span><h3>Creators for you</h3></div><button className="text-button" onClick={goCreators}>See all <Icon name="arrow" size={14}/></button></div>{topMatches(profile,3).map(({c,score})=><div className="mini-creator" key={c.id}><img src={creatorAvatar(c)} alt=""/><div><b>{c.name}</b><span>{c.title} · {c.city}</span></div><strong>{score}%</strong></div>)}</section>
     </div>
   </>;
@@ -841,19 +865,428 @@ function StrategyReport({ goCreators }: { goCreators: () => void }) {
   </section>;
 }
 
+/* ---------- client projects ---------- */
+
+type ProjectWithId = ClientProject & { id: string };
+
+const PLATFORMS = ["Instagram", "YouTube", "YouTube Shorts", "Moj", "Josh", "ShareChat", "LinkedIn", "X"];
+const LANGUAGES = ["Hindi", "English", "Tamil", "Telugu", "Kannada", "Malayalam", "Bengali", "Marathi", "Gujarati", "Punjabi"];
+const POPULAR_NICHES = (() => {
+  const counts = new Map<string, number>();
+  for (const c of CREATORS) for (const n of c.niches) counts.set(n, (counts.get(n) ?? 0) + 1);
+  return [...counts].sort((a, b) => b[1] - a[1]).slice(0, 24).map(([n]) => n).sort();
+})();
+const STAGES = ["Brief ready", "Creators invited", "Proposals in", "Creator hired", "First cut", "Final delivery"];
+const STATUS_LABEL: Record<ProjectStatus, string> = { draft: "Draft", open: "Open for proposals", in_progress: "In progress", completed: "Completed" };
+
+const listOf = <T,>(v: T[] | Record<string, T> | undefined): T[] => (Array.isArray(v) ? v : v ? Object.values(v) : []);
+const keysOf = (v?: Record<string, number>) => Object.keys(v ?? {});
+
+function projectsOf(profile: Profile): ProjectWithId[] {
+  return Object.entries(profile.projects ?? {})
+    .map(([id, p]) => ({ ...p, id, deliverables: listOf(p.deliverables), platforms: listOf(p.platforms), niches: listOf(p.niches), languages: listOf(p.languages) }))
+    .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+}
+
+/** How far along a project is, as an index into STAGES (0–6). */
+function stageOf(p: ClientProject) {
+  if (p.status === "completed" || p.milestones?.final) return 6;
+  if (p.milestones?.firstCut) return 5;
+  if (keysOf(p.hired).length) return 4;
+  if (keysOf(p.invited).length) return 3;
+  if (p.status !== "draft") return 1;
+  return 0;
+}
+
+/** The last finished step, e.g. "Proposals in". */
+const stageLabel = (stage: number) => (stage <= 0 ? "Draft" : stage >= 6 ? "Delivered" : STAGES[stage - 1]);
+const daysUntil = (date: string) => Math.ceil((new Date(`${date}T23:59:59`).getTime() - Date.now()) / 86400000);
+const dueLabel = (p: ClientProject) => {
+  if (p.status === "completed") return "Completed";
+  const d = daysUntil(p.deadline);
+  return d < 0 ? `Overdue by ${-d} day${d === -1 ? "" : "s"}` : d === 0 ? "Due today" : `${d} day${d === 1 ? "" : "s"} left`;
+};
+const fmtDate = (s: string) => new Date(`${s}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+const fmtWhen = (t?: number) => (t ? new Date(t).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) : "");
+
+interface Proposal { c: SeedCreator; price: number; days: number; revisions: number; pitch: string; score: number; reasons: string[]; at: number }
+
+const HOOKS = [
+  "real routines and honest before-and-after moments",
+  "a day-in-the-life story with your product as the hero",
+  "quick explainers that answer the top three buyer questions",
+  "a challenge format your audience can join in",
+  "behind-the-scenes storytelling that builds trust",
+];
+
+/** A demo creator's proposal for a project: stable for the same creator + project. */
+function proposalFor(c: SeedCreator, p: ProjectWithId): Proposal {
+  const r = seeded(c.id + p.id);
+  const want = { niches: p.niches, platforms: p.platforms, languages: p.languages, budgetMax: p.budgetMax };
+  const score = matchScore(c, want);
+  const target = between(r, Math.max(c.rateFrom, p.budgetMin * 0.7), Math.min(c.rateTo, Math.max(c.rateFrom * 1.1, p.budgetMax)));
+  const price = roundTo(Math.max(c.rateFrom, target), 1000);
+  const shared = c.niches.filter((n) => p.niches.includes(n));
+  const platform = c.platforms.find((x) => p.platforms.includes(x.name))?.name ?? c.platforms[0].name;
+  const langs = c.languages.filter((l) => p.languages.includes(l));
+  const pitch = `A ${Math.max(2, p.deliverables.length)}-part ${platform} series built around ${(shared[0] ?? c.niches[0]).toLowerCase()} — ${HOOKS[Math.floor(r() * HOOKS.length)]}. I'll script the first two seconds for retention and deliver in ${(langs.length ? langs : c.languages.slice(0, 1)).join(" and ")}.`;
+  const reasons: string[] = [];
+  if (shared.length) reasons.push(`Works in ${shared.join(", ").toLowerCase()}`);
+  if (c.platforms.some((x) => p.platforms.includes(x.name))) reasons.push(`Strong on ${platform} (${formatCount(c.platforms.find((x) => x.name === platform)?.followers ?? 0)})`);
+  reasons.push(price <= p.budgetMax ? "Within your budget" : `${formatINRShort(price - p.budgetMax)} over budget`);
+  reasons.push(`${c.rating}★ from ${c.reviews} reviews`);
+  return { c, price, days: c.turnaroundDays + Math.floor(r() * 5), revisions: 1 + Math.floor(r() * 3), pitch, score, reasons, at: p.invited?.[c.id] ?? 0 };
+}
+
+function projectProposals(p: ProjectWithId) {
+  return keysOf(p.invited)
+    .map((id) => CREATORS.find((c) => c.id === id))
+    .filter((c): c is SeedCreator => !!c)
+    .map((c) => proposalFor(c, p))
+    .sort((a, b) => Number(!!p.hired?.[b.c.id]) - Number(!!p.hired?.[a.c.id]) || Number(!!p.declined?.[a.c.id]) - Number(!!p.declined?.[b.c.id]) || b.score - a.score);
+}
+
+function sampleProjectFor(profile: Profile): ProjectDraft {
+  const cl = profile.client ?? {};
+  const niches = INDUSTRY_NICHES[cl.industry as string] ?? ["Lifestyle", "Food"];
+  const platforms = CHANNEL_PLATFORMS[cl.channels as string] ?? ["Instagram", "YouTube Shorts"];
+  const brand = (cl.brand as string) || profile.name;
+  const deadline = new Date(Date.now() + 28 * 86400000).toISOString().slice(0, 10);
+  const draft: ProjectDraft = {
+    title: `${brand} — festive launch campaign`,
+    objective: (cl.description as string) ? `Introduce ${brand} to new customers this festive season. ${cl.description}` : `Introduce ${brand} to new customers this festive season with honest, creator-led content.`,
+    deliverables: ["3 Instagram Reels (30–45s)", "2 YouTube Shorts", "1 set of 6 product stills", "Usage rights for 6 months"],
+    platforms, niches: niches.slice(0, 3), languages: ["Hindi", "English"],
+    budgetMin: 60_000, budgetMax: 1_50_000, deadline, creatorsNeeded: 2, status: "open",
+  };
+  const top = CREATORS.map((c) => ({ c, s: matchScore(c, { niches: draft.niches, platforms: draft.platforms, languages: draft.languages }) })).sort((a, b) => b.s - a.s).slice(0, 4);
+  return { ...draft, invited: Object.fromEntries(top.map(({ c }) => [c.id, Date.now()])) };
+}
+
+/* ---------- list ---------- */
+
+type ProjectTab = "all" | "open" | "in_progress" | "draft" | "completed";
+
 function Projects() {
-  const { profile } = useAccount();
-  const pitches = ["A 3-part reel series built around real routines, blending an honest review with tactile product moments.", "A short cinematic film for launch week plus cut-downs for Shorts and Reels in two languages.", "Regional-language explainers that show the product in everyday use, with a strong hook in the first 2 seconds."];
+  const { user, profile } = useAccount();
+  const projects = projectsOf(profile);
+  const [tab, setTab] = useState<ProjectTab>("all");
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [editing, setEditing] = useState<ProjectWithId | "new" | null>(null);
+
+  useEffect(() => {
+    if (profile.seeded?.projects || projects.length) return;
+    seedSampleProject(user.uid, sampleProjectFor(profile)).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile.seeded?.projects, user.uid]);
+
+  const current = projects.find((p) => p.id === openId);
+  if (current) return <>
+    <ProjectDetail p={current} onBack={() => setOpenId(null)} onEdit={() => setEditing(current)} />
+    {editing && <ProjectForm initial={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSaved={(id) => { setEditing(null); setOpenId(id); }} />}
+  </>;
+
+  const counts: Record<ProjectTab, number> = {
+    all: projects.length,
+    open: projects.filter((p) => p.status === "open").length,
+    in_progress: projects.filter((p) => p.status === "in_progress").length,
+    draft: projects.filter((p) => p.status === "draft").length,
+    completed: projects.filter((p) => p.status === "completed").length,
+  };
+  const shown = tab === "all" ? projects : projects.filter((p) => p.status === tab);
+  const proposals = projects.filter((p) => p.status === "open").reduce((n, p) => n + keysOf(p.invited).length, 0);
+  const budget = projects.filter((p) => p.status !== "draft").reduce((n, p) => n + p.budgetMax, 0);
+  const tabs: [ProjectTab, string][] = [["all", "All"], ["open", "Open"], ["in_progress", "In progress"], ["draft", "Drafts"], ["completed", "Completed"]];
+
   return <>
-    <Topbar title="Projects" subtitle="Manage briefs, proposals and content delivery." />
-    <div className="page-content">
-      <div className="section-title"><div className="tabs"><button className="active">Active <b>4</b></button><button>Proposals <b>7</b></button><button>Completed</button></div><Button icon="plus">New project</Button></div>
-      <section className="project-hero"><div><span className="success-pill">IN PROGRESS</span><h2>Summer Reset Campaign</h2><p>Creator-led product launch · Due June 28</p></div><div className="project-score"><Icon name="spark"/><b>AI health score 92</b><span>On track</span></div></section>
-      <div className="proposal-layout">
-        <section className="panel proposals"><div className="panel-head"><div><h3>Creator proposals</h3><p>AI-ranked by creative fit, approach and value.</p></div><Button kind="light"><Icon name="spark"/> Shortlist with AI</Button></div>{topMatches(profile,3).map(({c,score},i)=><div className="proposal" key={c.id}><div className="rank">0{i+1}</div><img src={creatorAvatar(c)} alt=""/><div className="proposal-copy"><div><h4>{c.name}<span>{score}% fit</span></h4><p>“{pitches[i]}”</p></div><div className="proposal-meta"><span><Icon name="clock" size={14}/> {c.turnaroundDays} day delivery</span><b>{formatINRShort(c.rateFrom)}</b><button>Review proposal <Icon name="arrow" size={14}/></button></div></div></div>)}</section>
-        <aside className="panel timeline"><h3>Project timeline</h3>{[["Brief approved","May 26","done"],["Creator proposals","Jun 02","current"],["Creator selected","Jun 05",""],["First cut","Jun 16",""],["Final delivery","Jun 28",""]].map(([t,d,s])=><div className={`timeline-row ${s}`} key={t}><i>{s==="done"?"✓":""}</i><div><b>{t}</b><span>{d}</span></div></div>)}</aside>
+    <Topbar title="Projects" subtitle="Plan briefs, compare creator proposals and track delivery." />
+    <div className="page-content pj">
+      <section className="op2-stats" aria-label="Summary">
+        <div className="mint"><span>Active projects</span><b>{counts.open + counts.in_progress}</b><small>{counts.open} open · {counts.in_progress} in progress</small></div>
+        <div className="lilac"><span>Proposals to review</span><b>{proposals}</b><small>Across your open projects</small></div>
+        <div className="peach"><span>Committed budget</span><b>{formatINRShort(budget)}</b><small>Upper budget of live projects</small></div>
+        <div><span>Completed</span><b>{counts.completed}</b><small>{counts.draft} draft{counts.draft === 1 ? "" : "s"} waiting</small></div>
+      </section>
+
+      <div className="pj-bar">
+        <div className="op2-tabs" role="tablist" aria-label="Project status">
+          {tabs.map(([id, label]) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "on" : ""} onClick={() => setTab(id)}>{label}<i>{counts[id]}</i></button>)}
+        </div>
+        <Button icon="plus" onClick={() => setEditing("new")}>New project</Button>
+      </div>
+
+      {shown.length ? (
+        <div className="pj-grid">{shown.map((p) => {
+          const stage = stageOf(p);
+          const people = [...keysOf(p.hired), ...keysOf(p.invited).filter((id) => !p.hired?.[id])].map((id) => CREATORS.find((c) => c.id === id)).filter(Boolean) as SeedCreator[];
+          const late = p.status !== "completed" && daysUntil(p.deadline) < 0;
+          return (
+            <article key={p.id} className="pj-card">
+              <header>
+                <span className={`pj-status ${p.status}`}>{STATUS_LABEL[p.status]}</span>
+                {p.sample && <span className="pj-sample">Sample</span>}
+                <span className={`pj-due${late ? " late" : ""}`}><Icon name="calendar" size={14} /> {dueLabel(p)}</span>
+              </header>
+              <button className="op2-title" onClick={() => setOpenId(p.id)}>{p.title}</button>
+              <p className="op2-summary">{p.objective}</p>
+              <div className="op2-tags">{p.platforms.map((t) => <span key={t} className="plat">{t}</span>)}{p.niches.slice(0, 2).map((t) => <span key={t}>{t}</span>)}</div>
+              <div className="pj-progress">
+                <div className="pj-progress-head"><span>{stageLabel(stage)}</span><b>{Math.round((stage / 6) * 100)}%</b></div>
+                <div className="progress"><span style={{ width: `${(stage / 6) * 100}%` }} /></div>
+              </div>
+              <footer>
+                <div className="pj-people">
+                  {people.slice(0, 4).map((c) => <img key={c.id} src={creatorAvatar(c)} alt={c.name} title={c.name} />)}
+                  <span>{keysOf(p.hired).length ? `${keysOf(p.hired).length} hired` : people.length ? `${people.length} proposal${people.length === 1 ? "" : "s"}` : "No creators yet"}</span>
+                </div>
+                <span className="pj-budget">{formatINRShort(p.budgetMin)} – {formatINRShort(p.budgetMax)}</span>
+                <Button kind="dark" onClick={() => setOpenId(p.id)}>Open <Icon name="arrow" size={14} /></Button>
+              </footer>
+            </article>
+          );
+        })}</div>
+      ) : (
+        <div className="mk-empty">
+          <Icon name="brief" size={28} />
+          <b>{tab === "all" ? "No projects yet" : `No ${tabs.find((t) => t[0] === tab)![1].toLowerCase()} projects`}</b>
+          <p>Write a brief, invite matched creators and compare their proposals side by side.</p>
+          <Button icon="plus" onClick={() => setEditing("new")}>New project</Button>
+        </div>
+      )}
+    </div>
+    {editing && <ProjectForm initial={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSaved={(id) => { setEditing(null); setOpenId(id); }} />}
+  </>;
+}
+
+/* ---------- create / edit ---------- */
+
+function ChipPicker({ options, value, onChange, label }: { options: string[]; value: string[]; onChange: (v: string[]) => void; label: string }) {
+  return (
+    <div className="pj-chips" role="group" aria-label={label}>
+      {options.map((o) => {
+        const on = value.includes(o);
+        return <button type="button" key={o} className={on ? "on" : ""} aria-pressed={on} onClick={() => onChange(on ? value.filter((v) => v !== o) : [...value, o])}>{on && <Icon name="check" size={13} />}{o}</button>;
+      })}
+    </div>
+  );
+}
+
+function ProjectForm({ initial, onClose, onSaved }: { initial: ProjectWithId | null; onClose: () => void; onSaved: (id: string) => void }) {
+  const { user, profile } = useAccount();
+  const suggested = INDUSTRY_NICHES[profile.client?.industry as string] ?? [];
+  const [title, setTitle] = useState(initial?.title ?? "");
+  const [objective, setObjective] = useState(initial?.objective ?? "");
+  const [deliverables, setDeliverables] = useState((initial?.deliverables ?? ["3 Instagram Reels (30–45s)", "Usage rights for 6 months"]).join("\n"));
+  const [platforms, setPlatforms] = useState<string[]>(initial?.platforms ?? CHANNEL_PLATFORMS[profile.client?.channels as string] ?? ["Instagram"]);
+  const [niches, setNiches] = useState<string[]>(initial?.niches ?? suggested.slice(0, 2));
+  const [languages, setLanguages] = useState<string[]>(initial?.languages ?? ["Hindi", "English"]);
+  const [budgetMin, setBudgetMin] = useState(String(initial?.budgetMin ?? 50000));
+  const [budgetMax, setBudgetMax] = useState(String(initial?.budgetMax ?? 120000));
+  const [deadline, setDeadline] = useState(initial?.deadline ?? new Date(Date.now() + 21 * 86400000).toISOString().slice(0, 10));
+  const [creatorsNeeded, setCreatorsNeeded] = useState(String(initial?.creatorsNeeded ?? 1));
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState<"" | "draft" | "publish">("");
+  const nicheOptions = [...new Set([...suggested, ...POPULAR_NICHES, ...niches])];
+
+  const save = async (publish: boolean) => {
+    const items = deliverables.split("\n").map((d) => d.trim()).filter(Boolean);
+    const lo = Number(budgetMin.replace(/[^\d]/g, ""));
+    const hi = Number(budgetMax.replace(/[^\d]/g, ""));
+    const problem = !title.trim() ? "Give the project a title."
+      : !objective.trim() ? "Describe what you want to achieve."
+      : !items.length ? "Add at least one deliverable."
+      : !platforms.length ? "Pick at least one platform."
+      : !lo || !hi || lo > hi ? "Enter a budget range where the minimum is below the maximum."
+      : !initial && daysUntil(deadline) < 1 ? "Choose a deadline at least a day from now."
+      : "";
+    if (problem) { setError(problem); return; }
+    setError("");
+    setBusy(publish ? "publish" : "draft");
+    const data = { title: title.trim(), objective: objective.trim(), deliverables: items, platforms, niches, languages, budgetMin: lo, budgetMax: hi, deadline, creatorsNeeded: Math.max(1, Math.min(20, Number(creatorsNeeded) || 1)) };
+    try {
+      if (initial) {
+        const status = publish && initial.status === "draft" ? "open" : initial.status;
+        await updateProject(user.uid, initial.id, { ...data, status, ...(status === "open" && initial.status === "draft" ? { "milestones/publishedAt": Date.now() } : {}) });
+        onSaved(initial.id);
+      } else {
+        onSaved(await createProject(user.uid, { ...data, status: publish ? "open" : "draft" }));
+      }
+    } catch (e) {
+      setError(describeError(e));
+      setBusy("");
+    }
+  };
+
+  return (
+    <Drawer label={initial ? "Edit project" : "New project"} onClose={onClose}>
+      <h2 className="pj-form-title">{initial ? "Edit project" : "New project"}</h2>
+      <p className="mk-muted pj-form-sub">Creators see this brief when you invite them.</p>
+      {error && <div className="auth-alert error" role="alert">{error}</div>}
+      <form className="me-form pj-form" onSubmit={(e) => { e.preventDefault(); save(true); }} noValidate>
+        <label>Project title<input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Diwali gifting launch" maxLength={120} /></label>
+        <label>What do you want to achieve?<textarea value={objective} onChange={(e) => setObjective(e.target.value)} placeholder="The product, the audience, and what success looks like…" /></label>
+        <label>Deliverables <span className="mk-muted">— one per line</span><textarea value={deliverables} onChange={(e) => setDeliverables(e.target.value)} rows={4} /></label>
+        <div className="pj-field"><span>Platforms</span><ChipPicker label="Platforms" options={PLATFORMS} value={platforms} onChange={setPlatforms} /></div>
+        <div className="pj-field"><span>Niches</span><ChipPicker label="Niches" options={nicheOptions} value={niches} onChange={setNiches} /></div>
+        <div className="pj-field"><span>Content languages</span><ChipPicker label="Languages" options={LANGUAGES} value={languages} onChange={setLanguages} /></div>
+        <div className="me-form-grid">
+          <label>Budget from (₹)<input inputMode="numeric" value={budgetMin} onChange={(e) => setBudgetMin(e.target.value)} /></label>
+          <label>Budget up to (₹)<input inputMode="numeric" value={budgetMax} onChange={(e) => setBudgetMax(e.target.value)} /></label>
+          <label>Deadline<input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} /></label>
+          <label>Creators needed<input type="number" min={1} max={20} value={creatorsNeeded} onChange={(e) => setCreatorsNeeded(e.target.value)} /></label>
+        </div>
+        <div className="form-actions">
+          {(!initial || initial.status === "draft") && <button type="button" className="button ghost" disabled={!!busy} onClick={() => save(false)}>{busy === "draft" ? "Saving…" : "Save as draft"}</button>}
+          <button type="submit" className="button dark" disabled={!!busy}>{busy === "publish" ? "Saving…" : initial && initial.status !== "draft" ? "Save changes" : "Publish project"}</button>
+        </div>
+      </form>
+    </Drawer>
+  );
+}
+
+/* ---------- detail ---------- */
+
+function ProjectDetail({ p, onBack, onEdit }: { p: ProjectWithId; onBack: () => void; onEdit: () => void }) {
+  const { user } = useAccount();
+  const { openChat } = useContext(ShellContext);
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const [open, setOpen] = useState<SeedCreator | null>(null);
+  const proposals = projectProposals(p);
+  const hired = keysOf(p.hired);
+  const stage = stageOf(p);
+  const want = { niches: p.niches, platforms: p.platforms, languages: p.languages, budgetMax: p.budgetMax };
+  const suggestions = CREATORS.filter((c) => !p.invited?.[c.id]).map((c) => ({ c, score: matchScore(c, want) })).sort((a, b) => b.score - a.score).slice(0, 6);
+  const canInvite = p.status === "open" || p.status === "in_progress";
+
+  const act = async (key: string, patch: Record<string, unknown>) => {
+    setBusy(key);
+    setError("");
+    try { await updateProject(user.uid, p.id, patch); } catch (e) { setError(describeError(e)); } finally { setBusy(""); }
+  };
+  const remove = async () => {
+    if (!window.confirm(`Delete “${p.title}”? This can't be undone.`)) return;
+    await deleteProject(user.uid, p.id).catch((e) => setError(describeError(e)));
+    onBack();
+  };
+
+  const events = [
+    p.createdAt && { t: p.createdAt, label: "Project created" },
+    p.milestones?.publishedAt && { t: p.milestones.publishedAt, label: "Brief published" },
+    ...keysOf(p.invited).map((id) => ({ t: p.invited![id], label: `Invited ${CREATORS.find((c) => c.id === id)?.name ?? "a creator"}` })),
+    ...hired.map((id) => ({ t: p.hired![id], label: `Hired ${CREATORS.find((c) => c.id === id)?.name ?? "a creator"}` })),
+    p.milestones?.firstCut && { t: p.milestones.firstCut, label: "First cut received" },
+    p.milestones?.final && { t: p.milestones.final, label: "Final delivery approved" },
+  ].filter(Boolean) as { t: number; label: string }[];
+  events.sort((a, b) => b.t - a.t);
+
+  return <>
+    <Topbar title="Projects" subtitle="Plan briefs, compare creator proposals and track delivery." />
+    <div className="page-content pj">
+      <button className="pj-back" onClick={onBack}><Icon name="arrow" size={15} /> All projects</button>
+      <section className="pj-head">
+        <div className="pj-head-main">
+          <div className="pj-head-tags"><span className={`pj-status ${p.status}`}>{STATUS_LABEL[p.status]}</span>{p.sample && <span className="pj-sample">Sample project</span>}</div>
+          <h1>{p.title}</h1>
+          <dl className="pj-meta">
+            <div><dt>Budget</dt><dd>{formatINR(p.budgetMin)} – {formatINR(p.budgetMax)}</dd></div>
+            <div><dt>Deadline</dt><dd>{fmtDate(p.deadline)} · <span className={p.status !== "completed" && daysUntil(p.deadline) < 0 ? "late" : ""}>{dueLabel(p)}</span></dd></div>
+            <div><dt>Creators</dt><dd>{hired.length} of {p.creatorsNeeded} hired</dd></div>
+            <div><dt>Platforms</dt><dd>{p.platforms.join(", ")}</dd></div>
+          </dl>
+        </div>
+        <div className="pj-head-actions">
+          {p.status === "draft" && <Button onClick={() => act("publish", { status: "open", "milestones/publishedAt": Date.now() })}>{busy === "publish" ? "Publishing…" : "Publish project"}</Button>}
+          {p.status === "in_progress" && !p.milestones?.firstCut && <Button onClick={() => act("cut", { "milestones/firstCut": Date.now() })}><Icon name="check" size={15} /> First cut received</Button>}
+          {p.status === "in_progress" && p.milestones?.firstCut && <Button kind="accent" onClick={() => act("final", { "milestones/final": Date.now(), status: "completed" })}><Icon name="check" size={15} /> Approve final delivery</Button>}
+          {p.status === "completed" && <Button kind="light" onClick={() => act("reopen", { status: hired.length ? "in_progress" : "open", "milestones/final": null })}>Reopen</Button>}
+          <Button kind="light" onClick={onEdit}>Edit</Button>
+          <button className="pj-delete" onClick={remove} aria-label="Delete project" title="Delete project"><Icon name="plus" size={16} /></button>
+        </div>
+      </section>
+      {error && <div className="auth-alert error" role="alert">{error}</div>}
+
+      <ol className="pj-stages" aria-label="Project progress">
+        {STAGES.map((s, i) => <li key={s} className={i < stage ? "done" : i === stage ? "current" : ""}><i>{i < stage ? <Icon name="check" size={13} /> : i + 1}</i><span>{s}</span></li>)}
+      </ol>
+
+      <div className="pj-layout">
+        <div className="pj-main">
+          <section className="panel">
+            <div className="panel-head"><div><span>{proposals.length ? `${proposals.length} RECEIVED` : "PROPOSALS"}</span><h3>Creator proposals</h3></div>{proposals.length > 1 && <span className="mk-muted pj-note"><Icon name="spark" size={13} /> Ranked by fit, price and ratings</span>}</div>
+            {proposals.length ? proposals.map((pr, i) => {
+              const isHired = !!p.hired?.[pr.c.id];
+              const isShort = !!p.shortlisted?.[pr.c.id];
+              const isDeclined = !!p.declined?.[pr.c.id];
+              const full = hired.length >= p.creatorsNeeded;
+              return (
+                <article key={pr.c.id} className={`pj-proposal${isHired ? " hired" : ""}${isDeclined ? " declined" : ""}`}>
+                  <span className="pj-rank">{String(i + 1).padStart(2, "0")}</span>
+                  <img src={creatorAvatar(pr.c)} alt="" />
+                  <div className="pj-proposal-body">
+                    <div className="pj-proposal-top">
+                      <button className="pj-name" onClick={() => setOpen(pr.c)}>{pr.c.name}</button>
+                      <span className={`op2-match ${matchTone(pr.score)}`}><Icon name="spark" size={12} />{pr.score}% fit</span>
+                      {isHired && <span className="pj-tag hired">Hired</span>}
+                      {isShort && !isHired && <span className="pj-tag">Shortlisted</span>}
+                      {isDeclined && <span className="pj-tag muted">Declined</span>}
+                      <span className="pj-demo">Demo proposal</span>
+                    </div>
+                    <p className="pj-who">{pr.c.title} · {pr.c.city} · {pr.c.rating}★</p>
+                    <p className="pj-pitch">“{pr.pitch}”</p>
+                    <ul className="pj-reasons">{pr.reasons.map((r) => <li key={r}>{r}</li>)}</ul>
+                    <div className="pj-terms">
+                      <span><b>{formatINR(pr.price)}</b> quote</span>
+                      <span><b>{pr.days} days</b> delivery</span>
+                      <span><b>{pr.revisions}</b> revision{pr.revisions === 1 ? "" : "s"}</span>
+                    </div>
+                    <div className="pj-actions">
+                      {!isHired && !isDeclined && <Button kind="dark" onClick={() => act(`hire-${pr.c.id}`, { [`hired/${pr.c.id}`]: Date.now(), status: "in_progress", [`declined/${pr.c.id}`]: null })}>{full ? "Hire another" : "Hire"}</Button>}
+                      {!isHired && !isDeclined && <Button kind="light" onClick={() => act(`short-${pr.c.id}`, { [`shortlisted/${pr.c.id}`]: isShort ? null : Date.now() })}><Icon name="star" size={14} /> {isShort ? "Shortlisted" : "Shortlist"}</Button>}
+                      <Button kind="light" onClick={() => openChat(pr.c.id)}><Icon name="chat" size={14} /> Message</Button>
+                      {!isHired && <button className="text-button" onClick={() => act(`decline-${pr.c.id}`, { [`declined/${pr.c.id}`]: isDeclined ? null : Date.now(), [`shortlisted/${pr.c.id}`]: null })}>{isDeclined ? "Undo decline" : "Decline"}</button>}
+                      {isHired && p.status !== "completed" && <button className="text-button" onClick={() => act(`unhire-${pr.c.id}`, { [`hired/${pr.c.id}`]: null, ...(hired.length === 1 ? { status: "open", "milestones/firstCut": null } : {}) })}>Undo hire</button>}
+                    </div>
+                  </div>
+                </article>
+              );
+            }) : (
+              <div className="ov-empty"><Icon name="users" size={22} /><p>{p.status === "draft" ? "Publish the project, then invite creators to get proposals." : "Invite creators below — their proposals appear here."}</p></div>
+            )}
+          </section>
+
+          {canInvite && (
+            <section className="panel">
+              <div className="panel-head"><div><span>MATCHED TO THIS BRIEF</span><h3>Invite creators</h3></div></div>
+              <div className="pj-suggest">{suggestions.map(({ c, score }) => (
+                <div key={c.id} className="pj-suggest-row">
+                  <img src={creatorAvatar(c)} alt="" />
+                  <div><button className="pj-name" onClick={() => setOpen(c)}>{c.name}</button><span>{c.title} · {formatINRShort(c.rateFrom)}+ · {c.city}</span></div>
+                  <span className={`op2-match ${matchTone(score)}`}>{score}%</span>
+                  <Button kind="light" onClick={() => act(`invite-${c.id}`, { [`invited/${c.id}`]: Date.now() })}>{busy === `invite-${c.id}` ? "Inviting…" : "Invite"}</Button>
+                </div>
+              ))}</div>
+            </section>
+          )}
+        </div>
+
+        <aside className="pj-side">
+          <section className="panel">
+            <h3 className="pj-side-title">Brief</h3>
+            <p className="pj-objective">{p.objective}</p>
+            <h4>Deliverables</h4>
+            <ul className="mk-list">{p.deliverables.map((d) => <li key={d}><Icon name="check" size={14} /> {d}</li>)}</ul>
+            {!!p.niches.length && <><h4>Niches</h4><div className="op2-tags">{p.niches.map((n) => <span key={n}>{n}</span>)}</div></>}
+            {!!p.languages.length && <><h4>Languages</h4><div className="op2-tags">{p.languages.map((n) => <span key={n}>{n}</span>)}</div></>}
+          </section>
+          <section className="panel">
+            <h3 className="pj-side-title">Activity</h3>
+            <ul className="pj-activity">{events.map((e, i) => <li key={i}><time>{fmtWhen(e.t)}</time><span>{e.label}</span></li>)}</ul>
+          </section>
+        </aside>
       </div>
     </div>
+    {open && <CreatorDrawer c={open} score={matchScore(open, want)} reasons={matchReasons(open, { niches: p.niches, platforms: p.platforms, languages: p.languages })} saved={false} invited={!!p.invited?.[open.id]} onSave={() => {}} onInvite={() => act(`invite-${open.id}`, { [`invited/${open.id}`]: p.invited?.[open.id] ? null : Date.now() })} onClose={() => setOpen(null)} />}
   </>;
 }
 
@@ -1076,6 +1509,14 @@ function Messages() {
       setError(describeError(e));
     }
   };
+
+  const { pendingChat, clearPendingChat } = useContext(ShellContext);
+  useEffect(() => {
+    if (!pendingChat || realInbox.loading) return;
+    clearPendingChat();
+    startWith(pendingChat);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingChat, realInbox.loading]);
 
   const blocked = inbox.error === "permission" || directory.error === "permission";
 
@@ -1496,14 +1937,15 @@ function AppShell({ role, onSwitch }: { role: Role; onSwitch: () => void }) {
   const { user } = useAccount();
   const [clientPage,setClientPage]=useState<ClientPage>("home");
   const [creatorPage,setCreatorPage]=useState<CreatorPage>("home");
+  const [pendingChat,setPendingChat]=useState<string|null>(null);
   const page=role==="client"?clientPage:creatorPage;
   let content: ReactNode;
   if(role==="client"){
-    content=clientPage==="home"?<ClientHome goCreators={()=>setClientPage("creators")}/>:clientPage==="creators"?<CreatorMarketplace/>:clientPage==="projects"?<Projects/>:clientPage==="profile"?<ProfilePage/>:<Messages/>;
+    content=clientPage==="home"?<ClientHome goCreators={()=>setClientPage("creators")} goProjects={()=>setClientPage("projects")}/>:clientPage==="creators"?<CreatorMarketplace/>:clientPage==="projects"?<Projects/>:clientPage==="profile"?<ProfilePage/>:<Messages/>;
   } else {
     content=creatorPage==="home"?<CreatorHome go={setCreatorPage}/>:creatorPage==="opportunities"?<Opportunities/>:creatorPage==="messages"?<Messages/>:creatorPage==="studio"?<Studio key={user.uid} userId={user.uid}/>:<ProfilePage/>;
   }
-  return <ShellContext.Provider value={{ role, onSwitch, openProfile: () => (role === "client" ? setClientPage("profile") : setCreatorPage("profile")) }}><div className="app-shell"><Sidebar role={role} page={page} onPage={role==="client"?setClientPage:setCreatorPage} onSwitch={onSwitch}/><main className="app-main">{content}</main></div></ShellContext.Provider>;
+  return <ShellContext.Provider value={{ role, onSwitch, openProfile: () => (role === "client" ? setClientPage("profile") : setCreatorPage("profile")), openChat: (id) => { setPendingChat(id); if (role === "client") setClientPage("messages"); else setCreatorPage("messages"); }, pendingChat, clearPendingChat: () => setPendingChat(null) }}><div className="app-shell"><Sidebar role={role} page={page} onPage={role==="client"?setClientPage:setCreatorPage} onSwitch={onSwitch}/><main className="app-main">{content}</main></div></ShellContext.Provider>;
 }
 
 function Splash() {

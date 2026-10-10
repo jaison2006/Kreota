@@ -67,7 +67,7 @@ export interface SeedClient {
 
 /* ---------- deterministic numbers (same every load) ---------- */
 
-function seeded(key: string) {
+export function seeded(key: string) {
   let h = 2166136261;
   for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 16777619);
   return () => {
@@ -78,8 +78,8 @@ function seeded(key: string) {
   };
 }
 const pick = <T,>(r: () => number, list: readonly T[]) => list[Math.floor(r() * list.length)];
-const between = (r: () => number, lo: number, hi: number) => lo + r() * (hi - lo);
-const roundTo = (n: number, step: number) => Math.round(n / step) * step;
+export const between = (r: () => number, lo: number, hi: number) => lo + r() * (hi - lo);
+export const roundTo = (n: number, step: number) => Math.round(n / step) * step;
 
 /* ---------- creators ---------- */
 

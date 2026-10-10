@@ -12,7 +12,7 @@ import {
   updateProfile,
   type User,
 } from "firebase/auth";
-import { onValue, ref, runTransaction, serverTimestamp, update } from "firebase/database";
+import { onValue, push, ref, runTransaction, serverTimestamp, update } from "firebase/database";
 import { auth, db } from "./firebase";
 
 export type Role = "client" | "creator";
@@ -37,7 +37,37 @@ export interface Profile {
   interested?: Record<string, number>;
   /** One-time starter data already added to this account. */
   seeded?: Record<string, boolean>;
+  /** Client projects, keyed by project id. */
+  projects?: Record<string, ClientProject>;
 }
+
+export type ProjectStatus = "draft" | "open" | "in_progress" | "completed";
+
+export interface ClientProject {
+  title: string;
+  objective: string;
+  deliverables: string[];
+  platforms: string[];
+  niches: string[];
+  languages: string[];
+  budgetMin: number;
+  budgetMax: number;
+  /** YYYY-MM-DD */
+  deadline: string;
+  creatorsNeeded: number;
+  status: ProjectStatus;
+  createdAt: number;
+  updatedAt: number;
+  sample?: boolean;
+  /** Demo creator id -> time of the action. */
+  invited?: Record<string, number>;
+  shortlisted?: Record<string, number>;
+  declined?: Record<string, number>;
+  hired?: Record<string, number>;
+  milestones?: { publishedAt?: number; firstCut?: number; final?: number };
+}
+
+export type ProjectDraft = Omit<ClientProject, "createdAt" | "updatedAt">;
 
 export type Session =
   | { status: "loading" }
@@ -157,6 +187,43 @@ export const setListed = (uid: string, list: "shortlist" | "invites" | "interest
 /** Adds a starter shortlist once, and marks it done so removing items later sticks. */
 export const seedInterested = (uid: string, ids: string[]) =>
   update(userRef(uid), { ...Object.fromEntries(ids.map((id) => [`interested/${id}`, serverTimestamp()])), "seeded/interested": true });
+
+/* ---------- client projects ---------- */
+
+const projectPath = (uid: string, pid: string) => `projects/${pid}`;
+
+export async function createProject(uid: string, data: ProjectDraft): Promise<string> {
+  const pid = push(ref(db, `users/${uid}/projects`)).key!;
+  await update(userRef(uid), {
+    [projectPath(uid, pid)]: {
+      ...data,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      ...(data.status !== "draft" ? { milestones: { publishedAt: serverTimestamp() } } : {}),
+    },
+  });
+  return pid;
+}
+
+/** Patch keys may be nested paths like "invited/c01"; null removes a value. */
+export const updateProject = (uid: string, pid: string, patch: Record<string, unknown>) =>
+  update(userRef(uid), {
+    ...Object.fromEntries(Object.entries(patch).map(([k, v]) => [`${projectPath(uid, pid)}/${k}`, v])),
+    [`${projectPath(uid, pid)}/updatedAt`]: serverTimestamp(),
+  });
+
+export const deleteProject = (uid: string, pid: string) => update(userRef(uid), { [projectPath(uid, pid)]: null });
+
+/** One example project on a client's first visit, so the page shows the whole flow. */
+export async function seedSampleProject(uid: string, data: ProjectDraft) {
+  // Claim the "seeded" flag atomically first, so a double render or a second tab can't add a second sample.
+  const claim = await runTransaction(ref(db, `users/${uid}/seeded/projects`), (cur) => (cur ? undefined : true), { applyLocally: false });
+  if (!claim.committed) return;
+  const pid = push(ref(db, `users/${uid}/projects`)).key!;
+  await update(userRef(uid), {
+    [projectPath(uid, pid)]: { ...data, sample: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), milestones: { publishedAt: serverTimestamp() } },
+  });
+}
 
 /** Saves edits made on the profile page. */
 export const saveProfileFields = (uid: string, role: Role, values: FormValues) =>
