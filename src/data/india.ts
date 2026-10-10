@@ -89,7 +89,7 @@ type CreatorSeed = [
 ];
 
 const CREATOR_SEEDS: CreatorSeed[] = [
-  ["c01", "Aanya Iyer", "f", "@aanya.frames", "Beauty & skincare creator", "Chennai", "Tamil Nadu", ["Tamil", "English"], "Video & UGC", ["Skincare", "Beauty", "Gen Z"], ["Instagram", "YouTube Shorts"], 3, "Dermat-approved routines explained in plain Tamil and English. Known for honest 7-day reviews and humid-weather skincare."],
+  ["c01", "Anya", "f", "@anya.frames", "Beauty & skincare creator", "Chennai", "Tamil Nadu", ["Tamil", "English"], "Video & UGC", ["Skincare", "Beauty", "Gen Z"], ["Instagram", "YouTube Shorts"], 3, "Dermat-approved routines explained in plain Tamil and English. Known for honest 7-day reviews and humid-weather skincare."],
   ["c02", "Rohan Mehta", "m", "@rohanmakesfilms", "Product filmmaker", "Mumbai", "Maharashtra", ["Hindi", "English"], "Video & UGC", ["Tech", "Gadgets", "Product films"], ["YouTube", "Instagram"], 4, "Cinematic product films shot on a one-person crew. Former ad-agency editor who turns specs into stories people finish watching."],
   ["c03", "Priya Nair", "f", "@priyacooks.kerala", "Regional food storyteller", "Kochi", "Kerala", ["Malayalam", "English"], "Video & UGC", ["Food", "Regional cuisine", "Home cooking"], ["Instagram", "YouTube"], 3, "Kerala home recipes with grandmother-approved shortcuts. Warm, slow-living visuals and recipe reels that get saved and cooked."],
   ["c04", "Kabir Singh Sodhi", "m", "@kabir.onthego", "Travel & adventure creator", "Chandigarh", "Punjab", ["Punjabi", "Hindi", "English"], "Video & UGC", ["Travel", "Adventure", "Himalayas"], ["YouTube", "Instagram"], 4, "Road trips across the Himalayas on a budget. Drone-heavy travel films with practical itineraries and homestay finds."],

@@ -35,7 +35,7 @@
         ".read": "auth != null && root.child('conversations/' + $cid + '/members/' + auth.uid).exists()",
         "$mid": {
           ".write": "auth != null && !data.exists() && newData.child('senderId').val() === auth.uid && newData.parent().parent().parent().child('conversations/' + $cid + '/members/' + auth.uid).exists()",
-          ".validate": "newData.hasChildren(['senderId', 'text', 'at']) && newData.child('text').isString() && newData.child('text').val().length > 0 && newData.child('text').val().length <= 4000"
+          ".validate": "newData.hasChildren(['senderId', 'at']) && ((newData.child('text').isString() && newData.child('text').val().length > 0 && newData.child('text').val().length <= 4000) || (newData.child('file/id').isString() && newData.child('file/name').isString()))"
         }
       }
     },
@@ -44,6 +44,24 @@
         ".read": "auth != null && auth.uid === $uid",
         "$cid": {
           ".write": "auth != null && $cid.contains(auth.uid) && $cid.contains($uid) && newData.parent().parent().parent().child('conversations/' + $cid + '/members/' + auth.uid).exists()"
+        }
+      }
+    },
+    "files": {
+      "$cid": {
+        "$fid": {
+          ".read": "auth != null && root.child('conversations/' + $cid + '/members/' + auth.uid).exists()",
+          ".write": "auth != null && !data.exists() && newData.child('owner').val() === auth.uid && newData.parent().parent().parent().child('conversations/' + $cid + '/members/' + auth.uid).exists()",
+          ".validate": "newData.hasChildren(['owner', 'name', 'type', 'size', 'data']) && newData.child('data').isString() && newData.child('data').val().length <= 7100000 && newData.child('size').isNumber() && newData.child('size').val() <= 5242880"
+        }
+      }
+    },
+    "demoFiles": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        "$fid": {
+          ".write": "auth != null && auth.uid === $uid",
+          ".validate": "newData.hasChildren(['owner', 'name', 'type', 'size', 'data']) && newData.child('data').isString() && newData.child('data').val().length <= 7100000 && newData.child('size').isNumber() && newData.child('size').val() <= 5242880"
         }
       }
     }

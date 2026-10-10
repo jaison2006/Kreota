@@ -8,7 +8,7 @@ import {
 import { OPTIONS, ROLE_FIELDS, toLink, type FieldSection } from "./profileFields";
 import { CLIENTS, CREATORS, formatCount, formatINR, formatINRShort, matchScore, totalFollowers, type SeedClient, type SeedCreator } from "./data/india";
 import { creatorAvatar } from "./data/avatars";
-import { conversationId, DEMO_CONTACTS, demoIdOf, isDemoId, markDemoRead, markRead, openConversation, openDemoConversation, publishDirectoryEntry, sendDemoMessage, sendMessage, useDemoInbox, useDemoMessages, useDirectory, useInbox, useMessages, type Contact, type DirectoryEntry } from "./messaging";
+import { conversationId, DEMO_CONTACTS, FileTooLargeError, loadFileData, MAX_FILE_BYTES, sendDemoFile, sendFile, type FileMeta, demoIdOf, isDemoId, markDemoRead, markRead, openConversation, openDemoConversation, publishDirectoryEntry, sendDemoMessage, sendMessage, useDemoInbox, useDemoMessages, useDirectory, useInbox, useMessages, type Contact, type DirectoryEntry } from "./messaging";
 
 interface Account { user: User; profile: Profile }
 const AccountContext = createContext<Account | null>(null);
@@ -52,6 +52,9 @@ const iconPaths: Record<string, ReactNode> = {
   filter: <><path d="M4 5h16M7 12h10M10 19h4" /></>,
   star: <path d="m12 2 3 6 7 .9-5 4.8 1.3 6.8L12 17l-6.3 3.5L7 13.7 2 9l7-.9Z" />,
   clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
+  clip: <path d="m21 11-8.5 8.5a5.5 5.5 0 0 1-7.8-7.8l9-9a3.7 3.7 0 0 1 5.2 5.2l-9 9a1.8 1.8 0 0 1-2.6-2.6L15.5 6" />,
+  file: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6" /></>,
+  download: <><path d="M12 4v12M7 11l5 5 5-5" /><path d="M5 20h14" /></>,
   logout: <><path d="M10 17l5-5-5-5M15 12H3" /><path d="M14 3h7v18h-7" /></>,
 };
 
@@ -514,7 +517,7 @@ function CreatorMarketplace() {
         <button className={`mk-chip${savedOnly ? " on" : ""}`} aria-pressed={savedOnly} onClick={() => setSavedOnly((v) => !v)}><Icon name="star" size={13} /> Saved ({Object.keys(saved).length})</button>
         {filtersOn && <button className="text-button" onClick={reset}>Clear all</button>}
       </div>
-      <div className="market-summary"><div><Icon name="spark" /><span>Matched to</span><b>{brand}</b></div><p><strong>{list.length}</strong> of {CREATORS.length} creators · {Object.keys(invited).length} invited</p></div>
+      <div className="market-summary"><div><Icon name="spark" /><span>Matched to</span><b>{brand}</b></div><p><strong>{list.length}</strong> of {CREATORS.length} creators · {Object.keys(invited).length} invited<span className="mk-sample">Sample profiles for demo</span></p></div>
       {list.length ? (
         <div className="creator-grid">{list.map(({ c, score }) => (
           <article className="creator-card" key={c.id}>
@@ -602,72 +605,114 @@ function CreatorDrawer({ c, score, reasons, saved, invited, onSave, onInvite, on
 
 type BriefSort = "match" | "newest" | "budget" | "deadline";
 
+type BriefView = "recommended" | "all" | "closing" | "interested";
+
+const matchTone = (score: number) => (score >= 90 ? "high" : score >= 80 ? "mid" : "low");
+
 function Opportunities() {
   const { user, profile } = useAccount();
   const interested = profile.interested ?? {};
+  const [view, setView] = useState<BriefView>("recommended");
   const [q, setQ] = useState("");
   const [industry, setIndustry] = useState("");
   const [platform, setPlatform] = useState("");
   const [minBudget, setMinBudget] = useState(0);
   const [sort, setSort] = useState<BriefSort>("match");
-  const [mineOnly, setMineOnly] = useState(false);
   const [open, setOpen] = useState<SeedClient | null>(null);
 
+  const scored = CLIENTS.map((b) => ({ b, score: briefScore(b, profile) }));
+  const recommended = scored.filter((x) => x.score >= 80);
+  const closing = scored.filter((x) => x.b.brief.deadlineDays <= 10);
+  const mine = scored.filter((x) => interested[x.b.id]);
+  const newThisWeek = scored.filter((x) => x.b.brief.postedDaysAgo <= 7).length;
+  const base = view === "recommended" ? recommended : view === "closing" ? closing : view === "interested" ? mine : scored;
+
   const needle = q.trim().toLowerCase();
-  const list = CLIENTS.map((b) => ({ b, score: briefScore(b, profile) }))
+  const list = base
     .filter(({ b }) => !needle || `${b.brand} ${b.brief.title} ${b.brief.summary} ${b.city} ${b.industry} ${b.brief.niches.join(" ")}`.toLowerCase().includes(needle))
     .filter(({ b }) => !industry || b.industry === industry)
     .filter(({ b }) => !platform || b.brief.platforms.includes(platform))
     .filter(({ b }) => !minBudget || b.brief.budget[1] >= minBudget)
-    .filter(({ b }) => !mineOnly || interested[b.id])
     .sort((x, y) => sort === "newest" ? x.b.brief.postedDaysAgo - y.b.brief.postedDaysAgo
       : sort === "budget" ? y.b.brief.budget[1] - x.b.brief.budget[1]
       : sort === "deadline" ? x.b.brief.deadlineDays - y.b.brief.deadlineDays
       : y.score - x.score);
-  const filtersOn = !!(q || industry || platform || minBudget || mineOnly);
-  const reset = () => { setQ(""); setIndustry(""); setPlatform(""); setMinBudget(0); setMineOnly(false); };
+  const filtersOn = !!(q || industry || platform || minBudget);
+  const reset = () => { setQ(""); setIndustry(""); setPlatform(""); setMinBudget(0); };
   const toggle = (b: SeedClient) => setListed(user.uid, "interested", b.id, !interested[b.id]);
+  const sortLabel = { match: "best match", newest: "newest", budget: "highest budget", deadline: "soonest deadline" }[sort];
+  const tabs: [BriefView, string, number][] = [["recommended", "Recommended for you", recommended.length], ["all", "All briefs", scored.length], ["closing", "Closing soon", closing.length], ["interested", "Interested", mine.length]];
 
   return <>
-    <Topbar title="Opportunities" subtitle="Live briefs from verified Indian brands." />
-    <div className="page-content">
-      <div className="market-tools">
-        <div className="search-box"><Icon name="search" /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search brands, briefs, cities or niches…" aria-label="Search opportunities" /></div>
-        <label className="mk-select"><span className="sr-only">Sort</span>
-          <select value={sort} onChange={(e) => setSort(e.target.value as BriefSort)}>
-            <option value="match">Best match</option><option value="newest">Newest</option><option value="budget">Highest budget</option><option value="deadline">Soonest deadline</option>
-          </select>
-        </label>
+    <Topbar title="Opportunities" subtitle="Live briefs from verified Indian brands, matched to your profile." />
+    <div className="page-content op2">
+      <section className="op2-stats" aria-label="Summary">
+        <div><span>Open briefs</span><b>{scored.length}</b><small>from {new Set(CLIENTS.map((b) => b.industry)).size} industries</small></div>
+        <div className="mint"><span>Strong matches</span><b>{recommended.length}</b><small>80%+ fit with your skills</small></div>
+        <div className="lilac"><span>You're interested in</span><b>{mine.length}</b><small>{mine.length ? "Saved to your shortlist" : "Tap ☆ on a brief to shortlist it"}</small></div>
+        <div className="peach"><span>New this week</span><b>{newThisWeek}</b><small>Posted in the last 7 days</small></div>
+      </section>
+
+      <div className="op2-tabs" role="tablist" aria-label="Brief views">
+        {tabs.map(([id, label, n]) => (
+          <button key={id} role="tab" aria-selected={view === id} className={view === id ? "on" : ""} onClick={() => setView(id)}>
+            {label}<i>{n}</i>
+          </button>
+        ))}
       </div>
-      <div className="mk-filters">
+
+      <div className="op2-toolbar">
+        <div className="search-box"><Icon name="search" /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search brands, briefs, cities or niches…" aria-label="Search opportunities" /></div>
         <select value={industry} onChange={(e) => setIndustry(e.target.value)} aria-label="Industry"><option value="">All industries</option>{uniq(CLIENTS.map((b) => b.industry)).map((n) => <option key={n}>{n}</option>)}</select>
         <select value={platform} onChange={(e) => setPlatform(e.target.value)} aria-label="Platform"><option value="">All platforms</option>{uniq(CLIENTS.flatMap((b) => b.brief.platforms)).map((n) => <option key={n}>{n}</option>)}</select>
-        <select value={minBudget} onChange={(e) => setMinBudget(Number(e.target.value))} aria-label="Budget"><option value={0}>Any budget</option>{[25_000, 50_000, 1_00_000, 2_00_000].map((n) => <option key={n} value={n}>Up to {formatINRShort(n)}+</option>)}</select>
-        <button className={`mk-chip${mineOnly ? " on" : ""}`} aria-pressed={mineOnly} onClick={() => setMineOnly((v) => !v)}><Icon name="star" size={13} /> Interested ({Object.keys(interested).length})</button>
-        {filtersOn && <button className="text-button" onClick={reset}>Clear all</button>}
+        <select value={minBudget} onChange={(e) => setMinBudget(Number(e.target.value))} aria-label="Budget"><option value={0}>Any budget</option>{[25_000, 50_000, 1_00_000, 2_00_000].map((n) => <option key={n} value={n}>Pays {formatINRShort(n)}+</option>)}</select>
+        <select value={sort} onChange={(e) => setSort(e.target.value as BriefSort)} aria-label="Sort"><option value="match">Sort: Best match</option><option value="newest">Sort: Newest</option><option value="budget">Sort: Highest budget</option><option value="deadline">Sort: Soonest deadline</option></select>
       </div>
-      <p className="mk-count">{list.length} of {CLIENTS.length} briefs</p>
+
+      <div className="op2-count">
+        <span>Showing <b>{list.length}</b> {list.length === 1 ? "brief" : "briefs"} · sorted by {sortLabel}</span>
+        {filtersOn && <button className="text-button" onClick={reset}>Clear filters</button>}
+      </div>
+
       {list.length ? (
-        <div className="opportunity-list">{list.map(({ b, score }) => (
-          <article className="opportunity" key={b.id}>
-            <div className="op-match"><Icon name="spark" /><b>{score}%</b><span>MATCH</span></div>
-            <div className="op-main">
-              <div className="op-brand"><BrandMark client={b} size={34} /><span>{b.brand}<small>{b.verified ? "Verified brand · " : ""}{b.city} · {b.industry}</small></span></div>
-              <h2>{b.brief.title}</h2>
-              <p>{b.brief.summary}</p>
-              <div className="tag-row">{[...b.brief.platforms, ...b.brief.niches.slice(0, 2)].map((t) => <span key={t}>{t}</span>)}<span>{b.brief.deliverables.length} deliverables</span></div>
+        <div className="op2-grid">{list.map(({ b, score }) => (
+          <article className="op2-card" key={b.id}>
+            <header>
+              <BrandMark client={b} size={42} />
+              <div className="op2-brand">
+                <b>{b.brand}{b.verified && <span className="mk-verified" title="Verified brand">✓</span>}</b>
+                <span>{b.city} · {b.industry}</span>
+              </div>
+              <span className={`op2-match ${matchTone(score)}`} title="How well this brief fits your profile"><Icon name="spark" size={12} />{score}% match</span>
+            </header>
+            <button className="op2-title" onClick={() => setOpen(b)}>{b.brief.title}</button>
+            <p className="op2-summary">{b.brief.summary}</p>
+            <div className="op2-tags">
+              {b.brief.platforms.map((t) => <span key={t} className="plat">{t}</span>)}
+              {b.brief.niches.slice(0, 2).map((t) => <span key={t}>{t}</span>)}
             </div>
-            <div className="op-side">
-              <span>BUDGET</span><b>{briefBudget(b)}</b>
-              <span>DELIVERY</span><b>{b.brief.deadlineDays} days</b>
-              <small className="mk-muted">{postedLabel(b.brief.postedDaysAgo)}</small>
+            <dl className="op2-facts">
+              <div><dt>Budget</dt><dd>{briefBudget(b)}</dd></div>
+              <div><dt>Delivery</dt><dd className={b.brief.deadlineDays <= 10 ? "soon" : ""}>{b.brief.deadlineDays} days</dd></div>
+              <div><dt>Creators</dt><dd>{b.brief.creatorsNeeded} needed</dd></div>
+              <div><dt>Deliverables</dt><dd>{b.brief.deliverables.length}</dd></div>
+            </dl>
+            <footer>
+              <span className="op2-posted">{postedLabel(b.brief.postedDaysAgo)}</span>
+              <button className={`op2-star${interested[b.id] ? " on" : ""}`} onClick={() => toggle(b)} aria-pressed={!!interested[b.id]}>
+                <Icon name={interested[b.id] ? "check" : "star"} size={15} />{interested[b.id] ? "Interested" : "I'm interested"}
+              </button>
               <Button kind="dark" onClick={() => setOpen(b)}>View brief <Icon name="arrow" size={14} /></Button>
-              <Button kind="light" onClick={() => toggle(b)}>{interested[b.id] ? <><Icon name="check" /> Interested</> : "I'm interested"}</Button>
-            </div>
+            </footer>
           </article>
         ))}</div>
       ) : (
-        <div className="mk-empty"><Icon name="search" size={26} /><b>No briefs match</b><p>Try a different search or remove a filter.</p><Button kind="light" onClick={reset}>Clear filters</Button></div>
+        <div className="mk-empty">
+          <Icon name={view === "interested" ? "star" : "search"} size={26} />
+          <b>{view === "interested" && !filtersOn ? "No briefs shortlisted yet" : "No briefs match"}</b>
+          <p>{view === "interested" && !filtersOn ? "Tap “I'm interested” on any brief and it will appear here." : "Try a different search, remove a filter or switch tabs."}</p>
+          {filtersOn ? <Button kind="light" onClick={reset}>Clear filters</Button> : view !== "all" && <Button kind="light" onClick={() => setView("all")}>See all briefs</Button>}
+        </div>
       )}
     </div>
     {open && <BriefDrawer b={open} score={briefScore(open, profile)} interested={!!interested[open.id]} onToggle={() => toggle(open)} onClose={() => setOpen(null)} />}
@@ -948,6 +993,51 @@ function PeoplePicker({ people, loading, onPick, onBack, error }: { people: Cont
   );
 }
 
+const fileSize = (n: number) => (n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+
+function FileBubble({ cid, file, me }: { cid: string; file: FileMeta; me: string }) {
+  const isImage = file.type.startsWith("image/");
+  const [src, setSrc] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!isImage) return;
+    let live = true;
+    loadFileData(cid, me, file.id).then((d) => { if (live) setSrc(d); }).catch((e) => { if (live) setError(describeError(e)); });
+    return () => { live = false; };
+  }, [cid, me, file.id, isImage]);
+  const download = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const data = await loadFileData(cid, me, file.id);
+      const blob = await (await fetch(data)).blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = file.name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="msg-file">
+      {isImage && (src ? <button className="msg-file-img" onClick={download} aria-label={`Download ${file.name}`}><img src={src} alt={file.name} /></button> : !error && <div className="msg-file-img loading"><span className="splash-spinner" /></div>)}
+      <div className="msg-file-row">
+        <span className="msg-file-icon"><Icon name="file" size={18} /></span>
+        <div><b title={file.name}>{file.name}</b><span>{fileSize(file.size)}</span></div>
+        <button className="msg-file-dl" onClick={download} disabled={busy} aria-label={`Download ${file.name}`}>{busy ? <span className="splash-spinner" /> : <Icon name="download" size={16} />}</button>
+      </div>
+      {error && <small className="msg-file-error">{error}</small>}
+    </div>
+  );
+}
+
 function Chat({ cid, other, otherId, unread, onBack }: { cid: string; other?: Contact; otherId: string; unread: number; onBack: () => void }) {
   const { user, profile } = useAccount();
   const me = user.uid;
@@ -960,6 +1050,28 @@ function Chat({ cid, other, otherId, unread, onBack }: { cid: string; other?: Co
   const [error, setError] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState<string[]>([]);
+  const [dragging, setDragging] = useState(false);
+
+  const shareFiles = async (files: File[]) => {
+    setError("");
+    for (const f of files) {
+      if (f.size > MAX_FILE_BYTES) { setError(`"${f.name}" is ${fileSize(f.size)}. You can share files up to 5 MB.`); continue; }
+      setUploading((u) => [...u, f.name]);
+      try {
+        if (demoId) await sendDemoFile(me, demoId, f);
+        else await sendFile(cid, me, otherId, f);
+      } catch (e) {
+        const denied = /permission/i.test(`${(e as { code?: string }).code ?? ""} ${(e as Error).message ?? ""}`);
+        setError(e instanceof FileTooLargeError ? e.message
+          : denied ? "File sharing isn't switched on yet. The Realtime Database rules need the file-sharing update (files and demoFiles) — publish database.rules.json in the Firebase console."
+          : describeError(e));
+      } finally {
+        setUploading((u) => { const i = u.indexOf(f.name); return i < 0 ? u : [...u.slice(0, i), ...u.slice(i + 1)]; });
+      }
+    }
+  };
 
   // Opening a conversation (or receiving while it's open) clears its unread count.
   useEffect(() => {
@@ -992,8 +1104,15 @@ function Chat({ cid, other, otherId, unread, onBack }: { cid: string; other?: Co
   };
 
   let lastDay = "";
+  const hasFiles = (e: React.DragEvent) => Array.from(e.dataTransfer.types).includes("Files");
   return (
-    <div className="msg-chat">
+    <div
+      className={`msg-chat${dragging ? " dragging" : ""}`}
+      onDragOver={(e) => { if (hasFiles(e)) { e.preventDefault(); setDragging(true); } }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false); }}
+      onDrop={(e) => { if (hasFiles(e)) { e.preventDefault(); setDragging(false); shareFiles(Array.from(e.dataTransfer.files)); } }}
+    >
+      {dragging && <div className="msg-drop"><Icon name="clip" size={26} /><b>Drop to share</b><span>Files up to 5 MB</span></div>}
       <header className="msg-chat-head">
         <button className="icon-btn msg-back" onClick={onBack} aria-label="Back to conversations"><Icon name="arrow" /></button>
         <PersonAvatar entry={other} />
@@ -1014,7 +1133,8 @@ function Chat({ cid, other, otherId, unread, onBack }: { cid: string; other?: Co
               <div key={m.id} className="msg-item">
                 {showDay && <div className="msg-day"><span>{label}</span></div>}
                 <div className={`msg-bubble${mine ? " mine" : ""}${tail ? " tail" : ""}`}>
-                  <p>{m.text}</p>
+                  {m.file && <FileBubble cid={cid} file={m.file} me={me} />}
+                  {m.text && <p>{m.text}</p>}
                   {tail && <time>{"auto" in m && m.auto ? "Automatic reply · " : ""}{m.at ? new Date(m.at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : ""}</time>}
                 </div>
               </div>
@@ -1022,7 +1142,10 @@ function Chat({ cid, other, otherId, unread, onBack }: { cid: string; other?: Co
           })}
       </div>
       {error && <div className="auth-alert error msg-error" role="alert">{error}</div>}
+      {uploading.length > 0 && <div className="msg-uploading">{uploading.map((n, i) => <span key={n + i}><span className="splash-spinner" /> Sending {n}…</span>)}</div>}
       <form className="msg-composer" onSubmit={(e) => { e.preventDefault(); send(); }}>
+        <input ref={fileRef} type="file" multiple hidden onChange={(e) => { shareFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
+        <button type="button" className="msg-attach" onClick={() => fileRef.current?.click()} aria-label="Share a file" title="Share a file (up to 5 MB)"><Icon name="clip" size={19} /></button>
         <textarea
           ref={inputRef}
           value={draft}

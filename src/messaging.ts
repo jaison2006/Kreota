@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { increment, limitToLast, onValue, push, query, ref, serverTimestamp, set, update } from "firebase/database";
+import { get, increment, limitToLast, onValue, push, query, ref, serverTimestamp, set, update } from "firebase/database";
 import { db } from "./firebase";
 import type { Profile, Role } from "./session";
 import { CLIENTS, CREATORS } from "./data/india";
@@ -27,6 +27,7 @@ export interface InboxRow {
 }
 
 export interface Message {
+  file?: FileMeta;
   id: string;
   senderId: string;
   text: string;
@@ -218,3 +219,100 @@ export async function sendDemoMessage(me: string, id: string, text: string, myNa
 }
 
 export const markDemoRead = (me: string, id: string) => update(ref(db, demoPath(me, id)), { unread: 0 });
+
+/* ---------- file sharing ---------- */
+
+/** Files live in the Realtime Database (Firebase Storage needs the paid plan), so they're capped. */
+export const MAX_FILE_BYTES = 5 * 1024 * 1024;
+
+export interface FileMeta { id: string; name: string; type: string; size: number }
+
+export class FileTooLargeError extends Error {}
+
+function readAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+async function packFile(file: File, owner: string) {
+  if (file.size > MAX_FILE_BYTES) throw new FileTooLargeError(`${file.name} is larger than 5 MB.`);
+  const data = await readAsDataUrl(file);
+  const meta = { name: file.name.slice(0, 200) || "file", type: file.type || "application/octet-stream", size: file.size };
+  return { meta, record: { ...meta, owner, data, at: serverTimestamp() } };
+}
+
+const filePreview = (name: string) => `📎 ${name}`;
+
+export async function sendFile(cid: string, me: string, other: string, file: File) {
+  const { meta, record } = await packFile(file, me);
+  const id = push(ref(db, `files/${cid}`)).key!;
+  const mid = push(ref(db, `messages/${cid}`)).key!;
+  const preview = filePreview(meta.name);
+  await update(ref(db), {
+    [`files/${cid}/${id}`]: record,
+    [`messages/${cid}/${mid}`]: { senderId: me, text: "", file: { id, ...meta }, at: serverTimestamp() },
+    [`conversations/${cid}/lastMessage`]: { text: preview, senderId: me, at: serverTimestamp() },
+    [`conversations/${cid}/updatedAt`]: serverTimestamp(),
+    [`userConversations/${me}/${cid}/with`]: other,
+    [`userConversations/${me}/${cid}/lastText`]: preview,
+    [`userConversations/${me}/${cid}/lastSender`]: me,
+    [`userConversations/${me}/${cid}/lastAt`]: serverTimestamp(),
+    [`userConversations/${me}/${cid}/updatedAt`]: serverTimestamp(),
+    [`userConversations/${other}/${cid}/with`]: me,
+    [`userConversations/${other}/${cid}/lastText`]: preview,
+    [`userConversations/${other}/${cid}/lastSender`]: me,
+    [`userConversations/${other}/${cid}/lastAt`]: serverTimestamp(),
+    [`userConversations/${other}/${cid}/updatedAt`]: serverTimestamp(),
+    [`userConversations/${other}/${cid}/unread`]: increment(1),
+  });
+}
+
+export async function sendDemoFile(me: string, id: string, file: File) {
+  const { meta, record } = await packFile(file, me);
+  const fid = push(ref(db, `demoFiles/${me}`)).key!;
+  const base = demoPath(me, id);
+  const mid = push(ref(db, `${base}/messages`)).key!;
+  const preview = filePreview(meta.name);
+  await update(ref(db), {
+    [`demoFiles/${me}/${fid}`]: record,
+    [`${base}/messages/${mid}`]: { senderId: me, text: "", file: { id: fid, ...meta }, at: serverTimestamp() },
+    [`${base}/lastText`]: preview,
+    [`${base}/lastSender`]: me,
+    [`${base}/lastAt`]: serverTimestamp(),
+    [`${base}/unread`]: 0,
+  });
+  const reply = isDemoId(id) && id.startsWith("b")
+    ? `Thanks for sending "${meta.name}"! Our team will review it and come back with feedback within two working days.`
+    : `Got "${meta.name}" — thanks! I'll go through it and share my thoughts and a rough concept soon.`;
+  setTimeout(() => {
+    const rid = push(ref(db, `${base}/messages`)).key!;
+    update(ref(db), {
+      [`${base}/messages/${rid}`]: { senderId: id, text: reply, at: serverTimestamp(), auto: true },
+      [`${base}/lastText`]: reply.length > 120 ? `${reply.slice(0, 117)}…` : reply,
+      [`${base}/lastSender`]: id,
+      [`${base}/lastAt`]: serverTimestamp(),
+      [`${base}/unread`]: increment(1),
+    }).catch(() => {});
+  }, 1800);
+}
+
+const fileCache = new Map<string, Promise<string>>();
+/** Loads a shared file's contents as a data URL (cached per session). */
+export function loadFileData(cid: string, me: string, fileId: string): Promise<string> {
+  const path = cid.startsWith("demo:") ? `demoFiles/${me}/${fileId}` : `files/${cid}/${fileId}`;
+  let p = fileCache.get(path);
+  if (!p) {
+    p = get(ref(db, path)).then((s) => {
+      const data = s.val()?.data;
+      if (typeof data !== "string") throw new Error("This file is no longer available.");
+      return data;
+    });
+    p.catch(() => fileCache.delete(path));
+    fileCache.set(path, p);
+  }
+  return p;
+}
